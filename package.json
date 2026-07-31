@@ -1,0 +1,93 @@
+{
+  "name": "@particle-academy/fancy-grid",
+  "version": "0.1.0",
+  "description": "Data grid for Human+ UX — TanStack Table (and optionally TanStack Virtual) under a controlled, JSON-serializable, agent-bridgeable Fancy surface. The engines stay peers; the grid never bundles them.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Particle-Academy/fancy-grid.git"
+  },
+  "homepage": "https://github.com/Particle-Academy/fancy-grid#readme",
+  "bugs": "https://github.com/Particle-Academy/fancy-grid/issues",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./virtual": {
+      "import": {
+        "types": "./dist/virtual.d.ts",
+        "default": "./dist/virtual.js"
+      },
+      "require": {
+        "types": "./dist/virtual.d.cts",
+        "default": "./dist/virtual.cjs"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "lint": "tsc --noEmit && eslint .",
+    "test": "vitest run",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "tsup"
+  },
+  "keywords": [
+    "react",
+    "data-grid",
+    "table",
+    "tanstack-table",
+    "tanstack-virtual",
+    "virtualization",
+    "human-plus",
+    "agent"
+  ],
+  "peerDependencies": {
+    "@tanstack/react-table": "^8.0.0",
+    "@tanstack/react-virtual": "^3.0.0",
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@tanstack/react-virtual": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@tanstack/react-table": "^8.21.3",
+    "@tanstack/react-virtual": "^3.13.12",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "eslint": "^10.8.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "jsdom": "^27.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.65.0",
+    "vitest": "^3.2.4"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "sideEffects": false,
+  "overrides": {
+    "esbuild": "^0.28.1"
+  }
+}
