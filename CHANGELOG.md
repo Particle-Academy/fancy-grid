@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > taking a new minor — each breaking entry says what you have to do, and most
 > of the time the answer is nothing.
 
+## [Unreleased]
+
 ## [0.3.0] — 2026-08-09
 
 ### Added
@@ -43,7 +45,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Both options default off; nothing changes for existing consumers, and a test
   asserts that.
 
-## [Unreleased]
 
 ## [0.2.0] — 2026-08-07
 
