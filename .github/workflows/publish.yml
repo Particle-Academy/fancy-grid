@@ -1,0 +1,53 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Release gate: a tag with no CHANGELOG entry fails HERE, before the
+      # package reaches the registry. A published version whose changes are
+      # undocumented cannot be fixed by editing the changelog afterwards — the
+      # tarball is already out, and the agent upgrading into it has no way to
+      # learn what broke.
+      - name: Changelog entry for this tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ ! -f CHANGELOG.md ]; then
+            echo "::error::No CHANGELOG.md. Every package keeps one."
+            exit 1
+          fi
+          if ! grep -qE "^## +\\[?v?${VERSION}\\]?" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no entry for ${VERSION}. Add one — say what a consumer must DO — then re-tag."
+            exit 1
+          fi
+          echo "Found changelog entry for ${VERSION}."
+
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      # Trusted Publishing (OIDC) requires npm 11.5.1+; bundled npm in the
+      # runner is 10.x. Pin a known-good npm rather than npm@latest: 12.0.0
+      # (the current latest) ships a broken --provenance path that fails with
+      # "Cannot find module 'sigstore'". 11.18.0 is the last stable 11.x.
+      - name: Publish
+        run: npx -y npm@11.18.0 publish --provenance --access public
