@@ -104,6 +104,26 @@ export interface FancyDataGridProps<TRow = Record<string, unknown>> {
   rowCount?: number;
   /** Windowing, from `@particle-academy/fancy-grid/virtual`. */
   virtual?: FancyGridVirtual;
+  /**
+   * Label columns `A`, `B`, `C` … instead of their `header`, and address cells
+   * A1-style.
+   *
+   * The spreadsheet presentation. `data-fancy-grid-cell` keeps the column id —
+   * the A1 address goes on a separate `data-fancy-grid-address`, deliberately.
+   *
+   * A1 is POSITIONAL: `B2` names whatever currently sits in the second column of
+   * the second row, so it moves under a sort or a filter. This package's rule is
+   * that handles are keyed by identity and never by index, precisely because an
+   * index-keyed handle silently points at a different row afterwards. Overloading
+   * the stable handle with a positional one would have broken that quietly, so
+   * they are two attributes: address it as a human reads it, key on it as code
+   * must.
+   *
+   * Row 1 is the first DATA row — a spreadsheet's row 1 is not its header.
+   */
+  columnLabels?: "header" | "letters";
+  /** Render the row-number gutter down the left edge. */
+  rowNumbers?: boolean;
   /** Shown when there are no rows. */
   emptyMessage?: ReactNode;
   className?: string;

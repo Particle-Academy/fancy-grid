@@ -10,6 +10,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > taking a new minor — each breaking entry says what you have to do, and most
 > of the time the answer is nothing.
 
+## [0.3.0] — 2026-08-09
+
+### Added
+
+- **Spreadsheet presentation** — `columnLabels="letters"` and `rowNumbers`.
+  Story #170, task 234.
+
+  ```tsx
+  <FancyDataGrid gridId="sheet" columns={cols} rows={rows} columnLabels="letters" rowNumbers />
+  ```
+
+  Column heads become `A`, `B`, `C`, a row-number gutter runs down the left, and
+  each cell gains `data-fancy-grid-address="B2"`.
+
+  The gallery's spreadsheet style needed a read-only cell-addressed grid and
+  noted `fancy-sheets` — the full editable workbook — was far too heavy for it.
+  This is an **extension rather than a new component**: it is the same table
+  presented with different labels, and reusing it keeps selection, virtualisation
+  and server-side mode instead of growing a second grid that slowly reimplements
+  them.
+
+  **The address is separate from the handle, deliberately.**
+  `data-fancy-grid-cell` still carries the column id. A1 is *positional* — `B2`
+  names whatever currently sits in the second column of the second row, so it
+  moves under a sort or filter. This package's rule is that handles key on
+  identity and never on index, exactly because an index-keyed handle silently
+  points at a different row afterwards. Overloading the stable handle with a
+  positional one would have broken that quietly, so they are two attributes:
+  address it as a human reads it, key on it as code must.
+
+  Both options default off; nothing changes for existing consumers, and a test
+  asserts that.
+
 ## [Unreleased]
 
 ## [0.2.0] — 2026-08-07

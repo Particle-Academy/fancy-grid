@@ -87,7 +87,20 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
   virtual,
   emptyMessage = "No rows",
   className,
+  columnLabels = "header",
+  rowNumbers = false,
 }: FancyDataGridProps<TRow>) {
+  /** 0 -> A, 25 -> Z, 26 -> AA. Spreadsheet column labels are base-26 bijective. */
+  const columnLetter = (index: number): string => {
+    let n = index;
+    let out = "";
+    while (n >= 0) {
+      out = String.fromCharCode(65 + (n % 26)) + out;
+      n = Math.floor(n / 26) - 1;
+    }
+    return out;
+  };
+  const spreadsheet = columnLabels === "letters";
   useStableReferenceWarning(gridId, columns, rows);
 
   const [internal, setInternal] = useState<FancyGridState>(defaultState ?? {});
@@ -210,7 +223,15 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
       <thead>
         {table.getHeaderGroups().map((group) => (
           <tr key={group.id}>
-            {group.headers.map((header) => {
+            {rowNumbers && (
+              // The corner above the row numbers. It stays EMPTY: numbering it
+              // is the classic off-by-one that makes every row label wrong.
+              <th
+                data-fancy-grid-gutter-corner=""
+                className="w-10 border-b border-zinc-200 dark:border-zinc-800"
+              />
+            )}
+            {group.headers.map((header, colIndex) => {
               const col = columns.find((c) => c.id === header.column.id);
               const sortable = header.column.getCanSort();
               const dir = header.column.getIsSorted();
@@ -219,6 +240,7 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
                 <th
                   key={header.id}
                   data-fancy-grid-header={header.column.id}
+                  data-fancy-grid-label={spreadsheet ? columnLetter(colIndex) : undefined}
                   data-fancy-grid-sort={dir || undefined}
                   aria-sort={dir === "asc" ? "ascending" : dir === "desc" ? "descending" : undefined}
                   scope="col"
@@ -233,7 +255,9 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
                     .join(" ")}
                   onClick={sortable ? header.column.getToggleSortingHandler() : undefined}
                 >
-                  {flexRender(header.column.columnDef.header, header.getContext())}
+                  {spreadsheet
+                    ? columnLetter(colIndex)
+                    : flexRender(header.column.columnDef.header, header.getContext())}
                   {dir === "asc" ? " ↑" : dir === "desc" ? " ↓" : ""}
                 </th>
               );
@@ -266,13 +290,24 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
             data-index={virtual ? row.index : undefined}
             className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50 dark:border-zinc-800/60 dark:hover:bg-zinc-800/40"
           >
-            {row.getVisibleCells().map((cell) => {
+            {rowNumbers && (
+              <td
+                data-fancy-grid-gutter={row.index + 1}
+                className="w-10 select-none border-r border-zinc-200 bg-zinc-50 px-2 py-2 text-right font-mono text-[11px] text-zinc-400 dark:border-zinc-800 dark:bg-zinc-900/40"
+              >
+                {row.index + 1}
+              </td>
+            )}
+            {row.getVisibleCells().map((cell, colIndex) => {
               const col = columns.find((c) => c.id === cell.column.id);
+              // A1 addresses the first DATA row as 1.
+              const address = spreadsheet ? `${columnLetter(colIndex)}${row.index + 1}` : null;
 
               return (
                 <td
                   key={cell.id}
                   data-fancy-grid-cell={cell.column.id}
+                  data-fancy-grid-address={address ?? undefined}
                   className={[
                     "px-3 py-2 text-zinc-800 dark:text-zinc-200",
                     ALIGN[col?.align ?? "start"],
