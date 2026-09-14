@@ -1,5 +1,7 @@
 # @particle-academy/fancy-grid
 
+[![Fancified](art/fancified.svg)](https://particle.academy)
+
 A data grid whose state is JSON and whose every element has a stable handle —
 [TanStack Table](https://tanstack.com/table) (and optionally
 [TanStack Virtual](https://tanstack.com/virtual)) under a controlled,
