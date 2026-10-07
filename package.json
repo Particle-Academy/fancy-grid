@@ -89,7 +89,8 @@
   "license": "MIT",
   "sideEffects": false,
   "overrides": {
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "source-map-js": "^1.2.2"
   },
   "engines": {
     "node": ">=22"
