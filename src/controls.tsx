@@ -1,8 +1,9 @@
+import { Button } from "@particle-academy/react-fancy/button";
 import { Input } from "@particle-academy/react-fancy/input";
 import { NumberField } from "@particle-academy/react-fancy/number-field";
 import { Select } from "@particle-academy/react-fancy/select";
 import { parseNumberText } from "./editing";
-import type { FancyGridControls, FancyGridEditorProps } from "./types";
+import type { FancyGridButtonProps, FancyGridControls, FancyGridEditorProps } from "./types";
 
 const INVALID = "border-red-500 focus:ring-red-500";
 
@@ -72,6 +73,14 @@ function SelectCell({ editor, draft, onDraftChange, invalid, disabled, label }: 
   );
 }
 
+function ReviewButton({ onClick, disabled, primary, children, handle }: FancyGridButtonProps) {
+  return (
+    <Button size="xs" color={primary ? "blue" : undefined} disabled={disabled} onClick={onClick} {...handle}>
+      {children}
+    </Button>
+  );
+}
+
 /**
  * The grid's controls, built from `react-fancy`.
  *
@@ -89,4 +98,5 @@ export const fancyGridControls: FancyGridControls = {
   text: TextCell,
   number: NumberCell,
   select: SelectCell,
+  button: ReviewButton,
 };

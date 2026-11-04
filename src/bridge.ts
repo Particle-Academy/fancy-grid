@@ -1,5 +1,13 @@
 import type { RefObject } from "react";
-import type { FancyDataGridHandle, FancyGridColumnInfo, FancyGridState } from "./types";
+import type {
+  FancyDataGridHandle,
+  FancyGridCellRef,
+  FancyGridColumnInfo,
+  FancyGridConfirmPasteResult,
+  FancyGridCopyOptions,
+  FancyGridStagePasteResult,
+  FancyGridState,
+} from "./types";
 
 export interface FancyGridBridgeAdapterOptions {
   id: string;
@@ -31,6 +39,14 @@ export interface FancyGridBridgeAdapter extends FancyGridBridgeAdapterOptions {
   editCell?: (rowId: string, columnId: string, value: unknown) => Promise<void>;
   /** The refusal `editCell` would give, or `null`. Writes nothing. */
   validateCell?: (rowId: string, columnId: string, value: unknown) => string | null;
+  /** TSV, formula injection neutralized. Reading, so a read-only bridge has it too. */
+  copy: (options?: FancyGridCopyOptions) => string;
+  /** Absent when `readOnly`. */
+  stagePaste?: (text: string, anchor?: FancyGridCellRef) => FancyGridStagePasteResult;
+  /** Absent when `readOnly`. */
+  confirmPaste?: (options: { id: string; skipInvalid?: boolean }) => Promise<FancyGridConfirmPasteResult>;
+  /** Absent when `readOnly`. */
+  rejectPaste?: (id: string) => boolean;
 }
 
 /**
@@ -54,6 +70,7 @@ export function createGridBridgeAdapter(
     getColumnIds: () => grid().getColumnIds(),
     getRowIds: () => grid().getRowIds(),
     getColumnInfo: () => grid().getColumnInfo(),
+    copy: (copyOptions) => grid().copy(copyOptions),
     ...(options.readOnly
       ? {}
       : {
@@ -65,6 +82,9 @@ export function createGridBridgeAdapter(
             const result = grid().validateCell(rowId, columnId, value);
             return result.ok ? null : result.error;
           },
+          stagePaste: (text: string, anchor?: FancyGridCellRef) => grid().stagePaste(text, { anchor, source: "agent" }),
+          confirmPaste: (confirm: { id: string; skipInvalid?: boolean }) => grid().confirmPaste({ ...confirm, source: "agent" }),
+          rejectPaste: (id: string) => grid().rejectPaste(id),
         }),
   };
 }

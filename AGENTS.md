@@ -85,6 +85,14 @@ npm run build # tsup
 - **The grid never holds an edit of its own and never changes `rows`.** The active
   cell, the open editor and its draft are all in `state`, so an agent can read them
   and a virtual window can drop a row without losing a half-typed value.
+- **A paste is staged, always, and what was approved is what gets applied.** Never add
+  a path from clipboard text to `onCellEdit` that skips `state.pendingPaste`. A second
+  stage must not replace one under review, and a confirm re-checks every cell against
+  the current rows.
+- **Pasted text is hostile.** It is `text/plain` only, it renders as a text node, and
+  it never reaches a custom `cell` before it is confirmed. Refuse rather than trim.
+- **Neutralizing is by value type**, matching holy-sheet's `Exchange/Csv.php`. Change
+  one and check the other.
 - **A cell under a sticky column looks in view to the browser.** `focus()` will not
   scroll it out, and `scroll-margin` does not fix that. `revealPastPins` does, and
   only a real browser can tell the difference.

@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent,
   type FocusEvent,
   type KeyboardEvent,
   type MouseEvent,
@@ -25,14 +26,29 @@ import {
   type SortingState,
   type VisibilityState,
 } from "@tanstack/react-table";
+import {
+  DEFAULT_PASTE_LIMITS,
+  cellToClipboardText,
+  findUnsafeCharacter,
+  neutralizeFormula,
+  parseClipboardText,
+  restoreNeutralized,
+  selectionToClipboardText,
+  serializeTsv,
+} from "./clipboard";
 import { coerceCellValue, isSameCellValue, resolveEditor } from "./editing";
 import type {
   FancyDataGridProps,
   FancyGridCellEdit,
   FancyGridCellRef,
   FancyGridColumn,
+  FancyGridConfirmPasteResult,
+  FancyGridCopyOptions,
   FancyGridEditResult,
   FancyGridEditing,
+  FancyGridPendingPaste,
+  FancyGridStagePasteResult,
+  FancyGridStagedCell,
   FancyGridState,
 } from "./types";
 
@@ -255,8 +271,10 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
   columnLabels = "header",
   rowNumbers = false,
   onCellEdit,
+  onCellEdits,
   validateCell,
   controls,
+  clipboard = false,
 }: FancyDataGridProps<TRow>) {
   /** 0 -> A, 25 -> Z, 26 -> AA. Spreadsheet column labels are base-26 bijective. */
   const columnLetter = (index: number): string => {
@@ -430,7 +448,11 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
     };
   };
 
-  const interactive = leaves.some((leaf) => resolveEditor(leaf.column) !== null);
+  const clipboardOptions = typeof clipboard === "object" ? clipboard : {};
+  const canCopy = clipboard !== false && clipboardOptions.copy !== false;
+  const canPaste = clipboard !== false && clipboardOptions.paste !== false;
+  const pasteLimits = { ...DEFAULT_PASTE_LIMITS, ...clipboardOptions.limits };
+  const interactive = canCopy || canPaste || leaves.some((leaf) => resolveEditor(leaf.column) !== null);
 
   /**
    * The path every write takes, whoever made it. Column rules, then the host's
@@ -647,6 +669,12 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
     const from = e.target instanceof HTMLElement && e.target.hasAttribute("data-fancy-grid-cell") ? cellFrom(e.target) : null;
     if (!from || e.altKey || e.ctrlKey || e.metaKey) return;
 
+    if (e.key === "Escape" && latest.current.pendingPaste && !latest.current.pendingPaste.pending) {
+      e.preventDefault();
+      emit({ pendingPaste: null });
+      return;
+    }
+
     if (e.key === "Enter" || e.key === "F2") {
       e.preventDefault();
       startEditing(from.rowId, from.columnId);
@@ -702,7 +730,251 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
     }
   };
 
+  /** Rows in display order: selected ones if asked for, or all of them. */
+  const copyCells = (options: FancyGridCopyOptions = {}): string => {
+    const columnIds = options.columnIds ?? displayColumns();
+    const selection = latest.current.rowSelection ?? {};
+    const wanted = options.rowIds ? new Set(options.rowIds) : null;
+    const anySelected = modelRows.some((r) => selection[r.id]);
+    const rowsToCopy = modelRows.filter((r) => (wanted ? wanted.has(r.id) : !anySelected || selection[r.id]));
+
+    const lines = rowsToCopy.map((row) =>
+      columnIds.map((id) => {
+        const column = leafById.get(id);
+        const value = column ? readPath(row.original, column.accessor ?? column.id) : null;
+        return cellToClipboardText(value, resolveEditor(column));
+      }),
+    );
+    if (options.includeHeaders) {
+      lines.unshift(columnIds.map((id) => neutralizeFormula(leafById.get(id)?.header ?? id)));
+    }
+    return serializeTsv(lines);
+  };
+
+  const pasteSequence = useRef(0);
+
+  /** Validate pasted text against the columns it lands in, without writing any of it. */
+  const stagePaste = (
+    text: string,
+    options: { anchor?: FancyGridCellRef; source?: FancyGridCellEdit["source"] } = {},
+  ): FancyGridStagePasteResult => {
+    const source = options.source ?? "agent";
+    const refuse = (code: Extract<FancyGridStagePasteResult, { ok: false }>["code"], error: string): FancyGridStagePasteResult => {
+      // A second paste refused while one is under review must not disturb the review.
+      emit({ pasteRefusal: { code, error } });
+      return { ok: false, code, error };
+    };
+
+    if (latest.current.pendingPaste) {
+      return refuse("pending-exists", "A paste is already waiting to be confirmed or rejected.");
+    }
+
+    const parsed = parseClipboardText(text, pasteLimits);
+    if (!parsed.ok) return refuse(parsed.code, parsed.error);
+
+    const order = displayColumns();
+    const anchor = options.anchor ?? latest.current.activeCell ?? (modelRows[0] && order[0] ? { rowId: modelRows[0].id, columnId: order[0] } : null);
+    const firstRow = anchor ? modelRows.findIndex((r) => r.id === anchor.rowId) : -1;
+    const firstColumn = anchor ? order.indexOf(anchor.columnId) : -1;
+    if (!anchor || firstRow < 0 || firstColumn < 0) {
+      return refuse("no-target", "There is no visible cell to paste into there.");
+    }
+
+    const width = parsed.rows.reduce((max, row) => Math.max(max, row.length), 0);
+    const rowsLeft = modelRows.length - firstRow;
+    const columnsLeft = order.length - firstColumn;
+    if (parsed.rows.length > rowsLeft) {
+      return refuse("taller-than-grid", `This paste has ${parsed.rows.length} rows, and only ${rowsLeft} are available from here.`);
+    }
+    if (width > columnsLeft) {
+      return refuse("wider-than-grid", `This paste has ${width} columns, and only ${columnsLeft} are available from here.`);
+    }
+
+    const cells: FancyGridStagedCell[] = [];
+    parsed.rows.forEach((pastedRow, r) => {
+      const rowId = modelRows[firstRow + r].id;
+      pastedRow.forEach((pasted, c) => {
+        const columnId = order[firstColumn + c];
+        const raw = restoreNeutralized(pasted);
+        const unsafe = findUnsafeCharacter(raw);
+        const check = unsafe
+          ? { failure: { error: `Contains a hidden character (${unsafe}).` } }
+          : checkEdit(rowId, columnId, raw, source);
+        const previous = draftFor(rowId, columnId);
+        cells.push(
+          "failure" in check
+            ? { rowId, columnId, raw, value: null, previous, error: check.failure.error, changed: false }
+            : { rowId, columnId, raw, value: check.edit.value, previous, error: null, changed: check.changed },
+        );
+      });
+    });
+
+    pasteSequence.current += 1;
+    const id = `paste-${Date.now().toString(36)}-${pasteSequence.current}`;
+    const staged: FancyGridPendingPaste = {
+      id,
+      source,
+      anchor,
+      rowIds: parsed.rows.map((_, r) => modelRows[firstRow + r].id),
+      columnIds: order.slice(firstColumn, firstColumn + width),
+      cells,
+      valid: cells.filter((c) => !c.error && c.changed).length,
+      invalid: cells.filter((c) => c.error).length,
+      unchanged: cells.filter((c) => !c.error && !c.changed).length,
+      error: null,
+    };
+    emit({ pendingPaste: staged, pasteRefusal: null });
+    return {
+      ok: true,
+      id,
+      rows: staged.rowIds.length,
+      columns: staged.columnIds.length,
+      valid: staged.valid,
+      invalid: staged.invalid,
+      unchanged: staged.unchanged,
+    };
+  };
+
+  /** Write what was approved, in order, stopping at the first refusal. */
+  const deliverBatch = async (edits: FancyGridCellEdit[]): Promise<{ applied: number; error?: string }> => {
+    if (onCellEdits) {
+      try {
+        const out = await onCellEdits(edits);
+        return out && "error" in out ? { applied: 0, error: out.error } : { applied: edits.length };
+      } catch (e) {
+        return { applied: 0, error: e instanceof Error ? e.message : String(e) };
+      }
+    }
+    for (let i = 0; i < edits.length; i++) {
+      const result = await deliverEdit(edits[i]);
+      if (!result.ok) return { applied: i, error: result.error };
+    }
+    return { applied: edits.length };
+  };
+
+  const confirmPaste = async (
+    options: { id?: string; skipInvalid?: boolean; source?: FancyGridCellEdit["source"] } = {},
+  ): Promise<FancyGridConfirmPasteResult> => {
+    const staged = latest.current.pendingPaste;
+    if (!staged) return { ok: false, code: "none", error: "No paste is waiting to be confirmed." };
+    if (options.id !== undefined && options.id !== staged.id) {
+      return { ok: false, code: "stale", error: `The paste waiting is "${staged.id}", not "${options.id}".` };
+    }
+    if (staged.pending) return { ok: false, code: "busy", error: "This paste is already being applied." };
+
+    // Checked again now: what was approved is what gets applied, or nothing is. The
+    // rows may have moved since this was staged, and that is the moment to find out.
+    const cells = staged.cells.map((cell): FancyGridStagedCell => {
+      if (cell.error) return cell;
+      const check = checkEdit(cell.rowId, cell.columnId, cell.raw, staged.source);
+      if ("failure" in check) return { ...cell, error: check.failure.error, changed: false };
+      if (!isSameCellValue(check.edit.previous, cell.previous)) {
+        return { ...cell, error: "Changed since this paste was staged.", changed: false };
+      }
+      return cell;
+    });
+    const invalid = cells.filter((c) => c.error).length;
+    const newlyInvalid = invalid - staged.invalid;
+    if (invalid > 0 && (newlyInvalid > 0 || !options.skipInvalid)) {
+      const error = `${invalid} cell${invalid === 1 ? "" : "s"} cannot be applied.`;
+      emit({ pendingPaste: { ...staged, cells, invalid, valid: cells.filter((c) => !c.error && c.changed).length, error } });
+      return { ok: false, code: "invalid", error };
+    }
+
+    const toWrite = cells.filter((c) => !c.error && c.changed);
+    const edits = toWrite.map((cell): FancyGridCellEdit => {
+      const column = leafById.get(cell.columnId);
+      return {
+        rowId: cell.rowId,
+        columnId: cell.columnId,
+        accessor: column?.accessor ?? cell.columnId,
+        value: cell.value,
+        previous: cell.previous,
+        source: staged.source,
+      };
+    });
+    if (edits.length > 0 && !onCellEdit && !onCellEdits) {
+      return { ok: false, code: "rejected", error: "This grid has no onCellEdit to receive the write.", applied: 0 };
+    }
+
+    emit({ pendingPaste: { ...staged, cells, pending: true, error: null } });
+    const outcome = await deliverBatch(edits);
+    if (outcome.error === undefined) {
+      emit({ pendingPaste: null, pasteRefusal: null });
+      return { ok: true, applied: outcome.applied, skipped: invalid };
+    }
+
+    // What already landed cannot be un-written, so the stage keeps only what has not,
+    // and says how far it got. Confirming again carries on from there.
+    const written = new Set(toWrite.slice(0, outcome.applied));
+    const remaining = cells.filter((c) => !written.has(c));
+    const error = `${outcome.applied} written, then: ${outcome.error}`;
+    emit({
+      pendingPaste: {
+        ...staged,
+        cells: remaining,
+        rowIds: staged.rowIds.filter((rowId) => remaining.some((c) => c.rowId === rowId)),
+        valid: remaining.filter((c) => !c.error && c.changed).length,
+        invalid,
+        unchanged: remaining.filter((c) => !c.error && !c.changed).length,
+        pending: false,
+        error,
+      },
+    });
+    return { ok: false, code: "rejected", error: outcome.error, applied: outcome.applied };
+  };
+
+  const rejectPaste = (id?: string): boolean => {
+    const staged = latest.current.pendingPaste;
+    if (!staged || (id !== undefined && id !== staged.id)) return false;
+    emit({ pendingPaste: null });
+    return true;
+  };
+
+  const inEditor = (target: EventTarget | null): boolean =>
+    target instanceof Element && target.closest("[data-fancy-grid-editor], [data-fancy-grid-paste-review]") !== null;
+
+  const warnedNoButton = useRef(false);
+  const handlePaste = (e: ClipboardEvent<HTMLTableElement>): void => {
+    if (!canPaste || inEditor(e.target)) return;
+    if (!controls?.button) {
+      if (process.env.NODE_ENV !== "production" && !warnedNoButton.current) {
+        warnedNoButton.current = true;
+        console.warn(
+          `[fancy-grid] Grid "${gridId}": a paste needs \`controls\` with a \`button\`, or nobody could ` +
+            "confirm it. Pass `fancyGridControls` from @particle-academy/fancy-grid/controls.",
+        );
+      }
+      return;
+    }
+    e.preventDefault();
+    // Plain text only. The HTML flavour on a spreadsheet's clipboard is never read.
+    stagePaste(e.clipboardData.getData("text/plain"), { source: "human" });
+  };
+
+  const handleCopy = (e: ClipboardEvent<HTMLTableElement>): void => {
+    if (!canCopy || inEditor(e.target)) return;
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed) {
+      e.preventDefault();
+      e.clipboardData.setData("text/plain", selectionToClipboardText(selection.toString()));
+      return;
+    }
+    const selected = modelRows.some((r) => latest.current.rowSelection?.[r.id]);
+    const active = latest.current.activeCell;
+    if (!selected && !active) return;
+    e.preventDefault();
+    e.clipboardData.setData(
+      "text/plain",
+      selected ? copyCells() : copyCells({ rowIds: [active!.rowId], columnIds: [active!.columnId] }),
+    );
+  };
+
   useImperativeHandle(ref, () => ({
+    copy: copyCells,
+    stagePaste,
+    confirmPaste,
+    rejectPaste,
     editCell: (rowId, columnId, value, options) => applyEdit(rowId, columnId, value, options?.source ?? "agent"),
     validateCell: (rowId, columnId, value) => {
       const check = checkEdit(rowId, columnId, value, "agent");
@@ -733,6 +1005,14 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
       : 0;
 
   const activeShown = visible.some((v) => v.row.id === current.activeCell?.rowId);
+  const pendingPaste = current.pendingPaste ?? null;
+  const stagedCells = useMemo(() => {
+    const byCell = new Map<string, FancyGridStagedCell>();
+    for (const staged of pendingPaste?.cells ?? []) byCell.set(`${staged.rowId}\u0000${staged.columnId}`, staged);
+    return byCell;
+  }, [pendingPaste]);
+  const ReviewButton = controls?.button;
+
   const columnSpan = table.getVisibleLeafColumns().length + (rowNumbers ? 1 : 0);
   // Built per family rather than from `getHeaderGroups()`, which merges a group
   // straddling the pin boundary into one cell: it would then be wholly stuck or
@@ -755,9 +1035,72 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
       role={interactive ? "grid" : undefined}
       className={["w-full border-collapse text-sm", className].filter(Boolean).join(" ")}
       {...(interactive
-        ? { onKeyDown: handleKeyDown, onFocus: handleFocus, onBlur: handleBlur, onDoubleClick: handleDoubleClick }
+        ? {
+            onKeyDown: handleKeyDown,
+            onFocus: handleFocus,
+            onBlur: handleBlur,
+            onDoubleClick: handleDoubleClick,
+            onCopy: handleCopy,
+            onPaste: handlePaste,
+          }
         : {})}
     >
+      {(pendingPaste || current.pasteRefusal) && (
+        // A caption is the one place inside a <table> that can hold this without a
+        // wrapper element around the grid, which would move every consumer's layout.
+        // Stuck to the top, so whoever scrolled down to read the staged rows can still
+        // answer without scrolling back; the inner box sticks left for the same reason.
+        <caption
+          data-fancy-grid-review-bar=""
+          className="sticky top-0 z-30 caption-top bg-[var(--fancy-grid-surface,#fff)] text-left dark:bg-[var(--fancy-grid-surface,#18181b)]"
+        >
+          <div className="sticky left-0 inline-block max-w-full p-2 text-xs text-zinc-800 dark:text-zinc-200">
+            {current.pasteRefusal && (
+              <p role="alert" data-fancy-grid-paste-refused={current.pasteRefusal.code} className="text-red-600 dark:text-red-400">
+                {current.pasteRefusal.error}
+              </p>
+            )}
+            {pendingPaste && (
+              <div data-fancy-grid-paste-review={pendingPaste.id} className="flex flex-wrap items-center gap-2">
+                <span>
+                  Paste from {pendingPaste.source}: {pendingPaste.valid} to change
+                  {pendingPaste.invalid > 0 ? `, ${pendingPaste.invalid} with errors` : ""}
+                  {pendingPaste.unchanged > 0 ? `, ${pendingPaste.unchanged} unchanged` : ""}, across {pendingPaste.rowIds.length}{" "}
+                  row{pendingPaste.rowIds.length === 1 ? "" : "s"}. Nothing has changed yet.
+                </span>
+                {pendingPaste.error && (
+                  <span role="alert" data-fancy-grid-paste-error="" className="text-red-600 dark:text-red-400">
+                    {pendingPaste.error}
+                  </span>
+                )}
+                {ReviewButton && (
+                  <>
+                    <ReviewButton
+                      primary
+                      disabled={Boolean(pendingPaste.pending) || pendingPaste.valid === 0}
+                      handle={{ "data-fancy-grid-paste-confirm": pendingPaste.id }}
+                      onClick={() => void confirmPaste({ id: pendingPaste.id, skipInvalid: pendingPaste.invalid > 0 })}
+                    >
+                      {pendingPaste.invalid > 0
+                        ? `Apply ${pendingPaste.valid} valid, skip ${pendingPaste.invalid}`
+                        : `Confirm ${pendingPaste.valid}`}
+                    </ReviewButton>
+                    <ReviewButton
+                      disabled={Boolean(pendingPaste.pending)}
+                      handle={{ "data-fancy-grid-paste-reject": pendingPaste.id }}
+                      onClick={() => {
+                        rejectPaste(pendingPaste.id);
+                      }}
+                    >
+                      Reject
+                    </ReviewButton>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </caption>
+      )}
       <thead>
         {shownHeaderGroups.map((group, groupIndex) => (
           <tr key={group.id}>
@@ -898,6 +1241,8 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
               const Control = isEditing && editor ? controls?.[editor.type] : undefined;
               // One tab stop in the whole grid: the active cell, or the first one.
               const isTabStop = isActive || (!activeShown && rowIndex === 0 && colIndex === 0);
+              const staged = stagedCells.get(`${row.id}\u0000${cell.column.id}`);
+              const stagedKind = staged ? (staged.error ? "invalid" : staged.changed ? "change" : "same") : undefined;
 
               return (
                 <td
@@ -908,6 +1253,8 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
                   data-fancy-grid-editable={editor ? "" : undefined}
                   data-fancy-grid-active={isActive ? "" : undefined}
                   data-fancy-grid-editing={Control ? "" : undefined}
+                  data-fancy-grid-staged={stagedKind}
+                  title={staged ? `Was: ${staged.previous === null || staged.previous === undefined ? "" : String(staged.previous)}` : undefined}
                   aria-invalid={Control && current.editing?.error ? true : undefined}
                   tabIndex={interactive ? (isTabStop ? 0 : -1) : undefined}
                   {...pin?.attrs}
@@ -920,11 +1267,27 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
                     Control ? "!p-1" : "",
                     pin ? PINNED_CELL : "",
                     pin?.seam ?? "",
+                    stagedKind === "change" ? "!bg-amber-100 dark:!bg-amber-950" : "",
+                    stagedKind === "invalid" ? "!bg-red-100 dark:!bg-red-950" : "",
                   ]
                     .filter(Boolean)
                     .join(" ")}
                 >
-                  {Control && editor && current.editing ? (
+                  {staged ? (
+                    // The pasted text as a text node, and never through a custom `cell`
+                    // renderer: until it is confirmed it is nobody's data yet.
+                    <>
+                      {/* Kept as written: a line break a reviewer cannot see is one they cannot judge. */}
+                      <span data-fancy-grid-staged-value="" className="whitespace-pre-wrap">
+                        {staged.error ? staged.raw : staged.value === null ? "" : String(staged.value)}
+                      </span>
+                      {staged.error && (
+                        <span data-fancy-grid-staged-error="" className="block text-xs font-normal text-red-700 dark:text-red-400">
+                          {staged.error}
+                        </span>
+                      )}
+                    </>
+                  ) : Control && editor && current.editing ? (
                     <>
                       <div data-fancy-grid-editor={editor.type}>
                         <Control

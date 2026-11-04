@@ -70,6 +70,8 @@ state — never a slice to merge:
   columnPinning?:    { left?: string[]; right?: string[] };
   activeCell?:       { rowId: string; columnId: string } | null;
   editing?:          { rowId: string; columnId: string; draft: unknown; error?: string | null; pending?: boolean } | null;
+  pendingPaste?:     { id: string; source: "human" | "agent"; cells: StagedCell[]; valid: number; invalid: number; ... } | null;
+  pasteRefusal?:     { code: string; error: string } | null;
 }
 ```
 
@@ -173,6 +175,48 @@ and resolves to a result rather than throwing, so a value refused from the keybo
 is refused from a tool call with the same words. The open editor's `draft` is in
 `state`, so an agent can see what a person is typing before it writes.
 
+## Copy and paste
+
+```tsx
+<FancyDataGrid clipboard controls={fancyGridControls} onCellEdit={save} … />
+```
+
+Off by default. `clipboard` also takes `{ copy?, paste?, limits? }`.
+
+**Copy** writes tab-separated text a spreadsheet understands, from the selected rows
+or the active cell. A cell beginning with `=`, `+`, `-`, `@`, tab or CR is prefixed
+with `'`, so a spreadsheet does not run it as a formula. The check is on the value's
+**type**: a real number is never touched, so `-5` stays a number, while the string
+`"-5"` is neutralized. The one exception is a string in a `type: "number"` column
+that is wholly a plain negative decimal, such as `"-1250.00"`, which cannot execute.
+
+**Paste** never writes directly. Every cell is checked against its column, the values
+show in place in the grid with the old value on the cell, and nothing changes until
+someone confirms:
+
+```ts
+ref.current.stagePaste(text);                     // what Ctrl+V does, writing nothing
+ref.current.confirmPaste({ id });                 // or the Confirm button
+ref.current.confirmPaste({ id, skipInvalid: true });
+ref.current.rejectPaste(id);                      // or Reject, or Escape on a cell
+```
+
+The stage is `state.pendingPaste`, so a person and an agent read the same thing, and
+either can answer. Pasted text is treated as hostile:
+
+- Only `text/plain` is read, and staged values render as text, never through `cell`.
+- A control character or bidi override is an error on that cell.
+- Limits are checked before reading it: 1000 rows, 100 columns, 2,000,000 characters
+  by default. Over a limit, or taller or wider than the grid has room for from the
+  anchor, is a clear refusal in `state.pasteRefusal`. Nothing is trimmed to fit, and
+  a paste never creates rows.
+- A second paste cannot replace one under review. A cell that changed after it was
+  staged refuses the confirm rather than overwriting.
+
+Supply `onCellEdits(edits)` to receive a confirmed paste as one batch. Otherwise each
+cell goes to `onCellEdit` in turn, and if one is refused the stage keeps what is still
+unwritten and says how far it got.
+
 ## Server-side mode
 
 ```tsx
@@ -226,6 +270,14 @@ Every element an agent might address carries one, rooted on `gridId`:
 | `data-fancy-grid-editing` | the cell with the open editor |
 | `data-fancy-grid-editor="text\|number\|select"` | the editor inside it |
 | `data-fancy-grid-edit-error` | why its last commit was refused |
+| `data-fancy-grid-staged="change\|invalid\|same"` | a cell in a staged paste |
+| `data-fancy-grid-staged-value` | the value it would take |
+| `data-fancy-grid-staged-error` | why it cannot |
+| `data-fancy-grid-paste-review="<id>"` | the paste review |
+| `data-fancy-grid-paste-confirm="<id>"` | its Confirm button |
+| `data-fancy-grid-paste-reject="<id>"` | its Reject button |
+| `data-fancy-grid-paste-error` | why the last confirm stopped |
+| `data-fancy-grid-paste-refused="<code>"` | why the last paste was refused |
 | `data-fancy-grid-empty` | the empty state |
 
 Together with the controlled state contract, that is what an MCP bridge needs:

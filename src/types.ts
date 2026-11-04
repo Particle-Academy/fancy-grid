@@ -124,6 +124,96 @@ export type FancyGridEditResult =
   | { ok: true; value: unknown; changed: boolean }
   | { ok: false; code: FancyGridEditFailure; error: string };
 
+export interface FancyGridPasteLimits {
+  /** Default 1000. */
+  maxRows: number;
+  /** Default 100. */
+  maxColumns: number;
+  /** Default 2,000,000. Checked before a character is read. */
+  maxChars: number;
+}
+
+export type FancyGridPasteRefusalCode =
+  | "empty"
+  | "too-large"
+  | "too-many-rows"
+  | "too-many-columns"
+  | "no-target"
+  | "taller-than-grid"
+  | "wider-than-grid"
+  | "pending-exists"
+  | "read-only";
+
+/** Why a paste was not staged. Shown on the grid, in state. */
+export interface FancyGridPasteRefusal {
+  code: FancyGridPasteRefusalCode;
+  error: string;
+}
+
+/** One cell of a staged paste. */
+export interface FancyGridStagedCell extends FancyGridCellRef {
+  /** The pasted text. */
+  raw: string;
+  /** What it would be stored as. `null` when `error` is set. */
+  value: unknown;
+  previous: unknown;
+  /** Why this cell cannot be applied. */
+  error: string | null;
+  /** Whether applying it would change anything. */
+  changed: boolean;
+}
+
+/**
+ * A paste waiting for someone to confirm or reject it. Nothing in `rows` has moved.
+ * In state, so a human sees the same thing an agent reads.
+ */
+export interface FancyGridPendingPaste {
+  /** Name this to confirm it, so nobody confirms a stage they have not read. */
+  id: string;
+  /** Who pasted. */
+  source: FancyGridCellEdit["source"];
+  anchor: FancyGridCellRef;
+  rowIds: string[];
+  columnIds: string[];
+  cells: FancyGridStagedCell[];
+  /** Cells that would change. */
+  valid: number;
+  /** Cells with an `error`. */
+  invalid: number;
+  /** Cells already holding that value. */
+  unchanged: number;
+  /** Why the last confirm stopped. */
+  error?: string | null;
+  /** A confirm is in flight. */
+  pending?: boolean;
+}
+
+export type FancyGridStagePasteResult =
+  | { ok: true; id: string; rows: number; columns: number; valid: number; invalid: number; unchanged: number }
+  | { ok: false; code: FancyGridPasteRefusalCode; error: string };
+
+export type FancyGridConfirmPasteResult =
+  | { ok: true; applied: number; skipped: number }
+  | { ok: false; code: "none" | "stale" | "busy" | "invalid" | "rejected"; error: string; applied?: number };
+
+export interface FancyGridCopyOptions {
+  /** Default: the selected rows, or every row in the current model. */
+  rowIds?: string[];
+  /** Default: the visible columns, in display order. */
+  columnIds?: string[];
+  includeHeaders?: boolean;
+}
+
+/** Props for a button in the paste review. */
+export interface FancyGridButtonProps {
+  onClick: () => void;
+  disabled?: boolean;
+  primary?: boolean;
+  children: ReactNode;
+  /** The stable handle, spread onto the rendered button. */
+  handle: Record<string, string>;
+}
+
 /** Props for one editor control. See `@particle-academy/fancy-grid/controls`. */
 export interface FancyGridEditorProps {
   editor: FancyGridEditor;
@@ -145,6 +235,8 @@ export interface FancyGridControls {
   text?: ComponentType<FancyGridEditorProps>;
   number?: ComponentType<FancyGridEditorProps>;
   select?: ComponentType<FancyGridEditorProps>;
+  /** The paste review's Confirm and Reject. Without it, a person cannot paste. */
+  button?: ComponentType<FancyGridButtonProps>;
 }
 
 /**
@@ -172,6 +264,10 @@ export interface FancyGridState {
   activeCell?: FancyGridCellRef | null;
   /** The open editor. See {@link FancyGridEditing}. */
   editing?: FancyGridEditing | null;
+  /** A paste awaiting confirmation. See {@link FancyGridPendingPaste}. */
+  pendingPaste?: FancyGridPendingPaste | null;
+  /** Why the last paste was refused. */
+  pasteRefusal?: FancyGridPasteRefusal | null;
 }
 
 /**
@@ -199,6 +295,24 @@ export interface FancyDataGridHandle {
   ) => Promise<FancyGridEditResult>;
   /** The same checks, writing nothing. */
   validateCell: (rowId: string, columnId: string, value: unknown) => FancyGridEditResult;
+  /** The cells as TSV, formula injection neutralized. What the copy shortcut writes. */
+  copy: (options?: FancyGridCopyOptions) => string;
+  /**
+   * Stage spreadsheet text into `state.pendingPaste`. Writes nothing. Refuses, and
+   * says why, rather than dropping anything; refuses too while another paste is
+   * under review, so nobody confirms something other than what they read.
+   */
+  stagePaste: (
+    text: string,
+    options?: { anchor?: FancyGridCellRef; source?: FancyGridCellEdit["source"] },
+  ) => FancyGridStagePasteResult;
+  /**
+   * Apply the staged paste. Refuses a cell that changed since it was staged, and any
+   * stage with errors unless `skipInvalid`. Omit `id` only from a human's own button.
+   */
+  confirmPaste: (options?: { id?: string; skipInvalid?: boolean; source?: FancyGridCellEdit["source"] }) => Promise<FancyGridConfirmPasteResult>;
+  /** Drop the staged paste. Writes nothing. */
+  rejectPaste: (id?: string) => boolean;
 }
 
 /**
@@ -275,6 +389,11 @@ export interface FancyDataGridProps<TRow = Record<string, unknown>> {
    * until it settles. Without this prop, no write can succeed.
    */
   onCellEdit?: (edit: FancyGridCellEdit) => void | { error: string } | Promise<void | { error: string }>;
+  /**
+   * Receives a confirmed paste as one batch, for a host that writes atomically.
+   * Same contract as `onCellEdit`. Without it, each cell goes to `onCellEdit` in turn.
+   */
+  onCellEdits?: (edits: FancyGridCellEdit[]) => void | { error: string } | Promise<void | { error: string }>;
   /** A host's own rule, run after the column's. Return a message to refuse. */
   validateCell?: (edit: FancyGridCellEdit) => string | null | undefined;
   /**
@@ -282,6 +401,11 @@ export interface FancyDataGridProps<TRow = Record<string, unknown>> {
    * writes through the handle, but no editor can open.
    */
   controls?: FancyGridControls;
+  /**
+   * Copy to TSV and paste through a stage-and-confirm step. Off by default. `true`,
+   * or choose: `{ copy?: boolean; paste?: boolean; limits?: Partial<FancyGridPasteLimits> }`.
+   */
+  clipboard?: boolean | { copy?: boolean; paste?: boolean; limits?: Partial<FancyGridPasteLimits> };
   /** Shown when there are no rows. */
   emptyMessage?: ReactNode;
   className?: string;
