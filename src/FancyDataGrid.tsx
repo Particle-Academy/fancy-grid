@@ -853,7 +853,7 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
   };
 
   const confirmPaste = async (
-    options: { id?: string; skipInvalid?: boolean; source?: FancyGridCellEdit["source"] } = {},
+    options: { id?: string; skipInvalid?: boolean } = {},
   ): Promise<FancyGridConfirmPasteResult> => {
     const staged = latest.current.pendingPaste;
     if (!staged) return { ok: false, code: "none", error: "No paste is waiting to be confirmed." };

@@ -170,7 +170,7 @@ export interface FancyGridStagedCell extends FancyGridCellRef {
 export interface FancyGridPendingPaste {
   /** Name this to confirm it, so nobody confirms a stage they have not read. */
   id: string;
-  /** Who pasted. */
+  /** Who pasted, which is also the `source` on the edits a confirm writes. */
   source: FancyGridCellEdit["source"];
   anchor: FancyGridCellRef;
   rowIds: string[];
@@ -310,7 +310,7 @@ export interface FancyDataGridHandle {
    * Apply the staged paste. Refuses a cell that changed since it was staged, and any
    * stage with errors unless `skipInvalid`. Omit `id` only from a human's own button.
    */
-  confirmPaste: (options?: { id?: string; skipInvalid?: boolean; source?: FancyGridCellEdit["source"] }) => Promise<FancyGridConfirmPasteResult>;
+  confirmPaste: (options?: { id?: string; skipInvalid?: boolean }) => Promise<FancyGridConfirmPasteResult>;
   /** Drop the staged paste. Writes nothing. */
   rejectPaste: (id?: string) => boolean;
 }

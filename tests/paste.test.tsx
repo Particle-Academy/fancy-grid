@@ -590,7 +590,7 @@ describe("agents take the same path", () => {
 
     const id = (staged! as { id: string }).id;
     let result: unknown;
-    await act(async () => { result = await ref.current!.confirmPaste({ id, source: "agent" }); });
+    await act(async () => { result = await ref.current!.confirmPaste({ id }); });
 
     expect(result).toEqual({ ok: true, applied: 2, skipped: 0 });
     expect(onEdit.mock.calls.every(([e]) => e.source === "agent")).toBe(true);

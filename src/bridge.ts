@@ -83,7 +83,7 @@ export function createGridBridgeAdapter(
             return result.ok ? null : result.error;
           },
           stagePaste: (text: string, anchor?: FancyGridCellRef) => grid().stagePaste(text, { anchor, source: "agent" }),
-          confirmPaste: (confirm: { id: string; skipInvalid?: boolean }) => grid().confirmPaste({ ...confirm, source: "agent" }),
+          confirmPaste: (confirm: { id: string; skipInvalid?: boolean }) => grid().confirmPaste(confirm),
           rejectPaste: (id: string) => grid().rejectPaste(id),
         }),
   };
