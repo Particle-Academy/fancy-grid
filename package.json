@@ -1,6 +1,6 @@
 {
   "name": "@particle-academy/fancy-grid",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Data grid for Human+ UX — TanStack Table (and optionally TanStack Virtual) under a controlled, JSON-serializable, agent-bridgeable Fancy surface. The engines stay peers; the grid never bundles them.",
   "repository": {
     "type": "git",

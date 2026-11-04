@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-04
+
 ### Added
 
 - **Column visibility, pinning and grouped headers**, all declared as JSON. `state.columnVisibility` (`false` hides; no entry means visible) and `state.columnPinning` (`{ left, right }`) are two new slices on the state object, and a column with `columns: [...]` is a group: a header with a real `colSpan` over its leaves, nesting as deep as you like. Nothing is on by default. **Consumer action:** none; an existing grid renders the same table.
