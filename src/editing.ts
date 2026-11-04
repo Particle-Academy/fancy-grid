@@ -8,7 +8,7 @@ export function resolveEditor<TRow>(column: FancyGridColumn<TRow> | undefined): 
 }
 
 /** Plain decimal notation, the same grammar react-fancy's NumberField reads. */
-const NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+const NUMBER = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/;
 const WHOLE = /^[+-]?\d+$/;
 /** `1,234.50`, which is what Excel puts on the clipboard for a formatted cell. */
 const GROUPED = /^[+-]?\d{1,3}(,\d{3})+(\.\d*)?$/;

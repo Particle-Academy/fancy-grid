@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A cell's number text is read in linear time.** The pattern behind number cells and paste could backtrack badly, so a very long pasted string of digits could freeze the tab. Every number it accepted is still accepted. **Consumer action:** none.
+
 ## [0.4.0] - 2026-11-04
 
 ### Added
