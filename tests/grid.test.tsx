@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, type ReactElement } from "react";
+import { act, useState, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { FancyDataGrid } from "../src/FancyDataGrid";
 import type { FancyGridColumn, FancyGridState } from "../src/types";
@@ -155,6 +155,81 @@ describe("controlled state", () => {
     });
 
     expect(cells("total")).toEqual(["10", "20", "30"]);
+  });
+});
+
+describe("a controlled host that re-renders", () => {
+  const MANY: Order[] = Array.from({ length: 100 }, (_, i) => ({ id: `r${i}`, customer: { name: `P${i}` }, total: i }));
+
+  function Host({ initial, seen }: { initial: FancyGridState; seen: FancyGridState[] }) {
+    const [state, setState] = useState(initial);
+    seen.push(state);
+    return <FancyDataGrid gridId="g" columns={COLUMNS} rows={MANY} state={state} onStateChange={setState} />;
+  }
+
+  const settle = () => act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it("does not page a grid nobody asked to page, and does not storm", async () => {
+    // Omitted slices were `?? []`, a fresh identity each render. The engine read
+    // that as "the filters changed", reset the page index, and that write landed
+    // in state as an invented `pagination: { pageIndex: 0, pageSize: 25 }`. The
+    // host stored it, re-rendered, and the grid was now cut to 25 rows with no
+    // error and no sign, and every render queued the next one.
+    const seen: FancyGridState[] = [];
+    const { rerender } = mount(<Host initial={{}} seen={seen} />);
+    await settle();
+    rerender(<Host initial={{}} seen={seen} />);
+    await settle();
+
+    expect(document.querySelectorAll("[data-fancy-grid-row]")).toHaveLength(100);
+    expect(seen.at(-1)?.pagination).toBeUndefined();
+    expect(seen.length).toBeLessThan(5);
+  });
+
+  it("does not page a grid when its sort really changes either", async () => {
+    // Stable empties stop the reset firing on every render. A real sort still fires
+    // it, and on a grid with no pagination that must not invent one.
+    const seen: FancyGridState[] = [];
+    mount(<Host initial={{}} seen={seen} />);
+    await settle();
+
+    act(() => (document.querySelector('[data-fancy-grid-header="total"]') as HTMLElement).click());
+    await settle();
+
+    expect(seen.at(-1)?.sorting).toEqual([{ id: "total", desc: false }]);
+    expect(seen.at(-1)?.pagination).toBeUndefined();
+    expect(document.querySelectorAll("[data-fancy-grid-row]")).toHaveLength(100);
+  });
+
+  it("stays on the page it was told to show", async () => {
+    // The same reset, on a grid that IS paged: every render went back to page one.
+    const seen: FancyGridState[] = [];
+    const { rerender } = mount(<Host initial={{ pagination: { pageIndex: 2, pageSize: 10 } }} seen={seen} />);
+    await settle();
+    rerender(<Host initial={{}} seen={seen} />);
+    await settle();
+
+    expect(seen.at(-1)?.pagination?.pageIndex).toBe(2);
+    expect(document.querySelector('[data-fancy-grid-row="r20"]')).not.toBeNull();
+  });
+
+  it("still goes back to page one when a paged grid's filter really changes", async () => {
+    const onStateChange = vi.fn<(next: FancyGridState) => void>();
+    const paged = (filters: FancyGridState["filters"]): FancyGridState => ({ filters, pagination: { pageIndex: 2, pageSize: 10 } });
+    const filterable: FancyGridColumn<Order>[] = [{ id: "customer", header: "Customer", accessor: "customer.name", filterable: true }];
+    const first = paged([]);
+    const { rerender } = mount(
+      <FancyDataGrid gridId="g" columns={filterable} rows={MANY} state={first} onStateChange={onStateChange} />,
+    );
+    await settle();
+    rerender(
+      <FancyDataGrid gridId="g" columns={filterable} rows={MANY} state={paged([{ id: "customer", value: "P1" }])} onStateChange={onStateChange} />,
+    );
+    await settle();
+
+    expect(onStateChange.mock.calls.at(-1)?.[0].pagination?.pageIndex).toBe(0);
   });
 });
 

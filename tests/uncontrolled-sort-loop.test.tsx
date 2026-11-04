@@ -60,8 +60,11 @@ const ROWS: Row[] = [
  * The sorting BEHAVIOUR is already covered by "sorts itself when uncontrolled"
  * in `grid.test.tsx`; this adds only the render bound, which nothing else asserts.
  *
- * If the reporter's repro arrives and reproduces, replace this docblock with what
- * actually happened and make the fix land against a failing version of this test.
+ * 2026-11-04: a storm WAS then reproduced on a different shape, a CONTROLLED host
+ * storing what `onStateChange` emits, and those literals were the cause. Fixed, and
+ * pinned in "a controlled host that re-renders" in `grid.test.tsx`, which did fail
+ * first. Whether that was the original report is unknown: this uncontrolled guard
+ * still has never been observed to fail.
  */
 describe("uncontrolled sort does not storm", () => {
   it("settles within a few renders of a sort click", () => {

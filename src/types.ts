@@ -1,4 +1,4 @@
-import type { Key, ReactNode } from "react";
+import type { Key, ReactNode, Ref } from "react";
 
 /**
  * A column, described as data rather than as React.
@@ -25,6 +25,13 @@ export interface FancyGridColumn<TRow = Record<string, unknown>> {
   width?: number;
   /** Custom cell renderer. Human-authored only — agents use `accessor`. */
   cell?: (value: unknown, row: TRow) => ReactNode;
+  /**
+   * Makes this a GROUP: a header spanning these columns, with no cells of its
+   * own. Nest as deep as you like. A group's `id` names the header handle
+   * (`data-fancy-grid-header-group`); sorting, filtering, hiding and pinning all
+   * address leaves, because those are what have cells.
+   */
+  columns?: FancyGridColumn<TRow>[];
 }
 
 /** One sort instruction. Mirrors TanStack's `SortingState` entry exactly. */
@@ -44,6 +51,24 @@ export interface FancyGridPagination {
   pageSize: number;
 }
 
+/** Leaf column ids stuck to each edge, in display order from the left. */
+export interface FancyGridColumnPinning {
+  left?: string[];
+  right?: string[];
+}
+
+/** One leaf column as an agent sees it. All JSON. */
+export interface FancyGridColumnInfo {
+  id: string;
+  header: string;
+  /** Ids of the groups this column sits in, outermost first. */
+  group: string[];
+  visible: boolean;
+  pinned: "left" | "right" | null;
+  sortable: boolean;
+  filterable: boolean;
+}
+
 /**
  * The whole grid, as JSON.
  *
@@ -58,6 +83,28 @@ export interface FancyGridState {
   /** Keyed by row id — see `getRowId`. */
   rowSelection?: Record<string, boolean>;
   pagination?: FancyGridPagination;
+  /**
+   * Keyed by leaf column id. `false` hides; no entry means visible, so a saved
+   * state from before a column existed still shows it.
+   */
+  columnVisibility?: Record<string, boolean>;
+  /** An id named on both sides is pinned left. */
+  columnPinning?: FancyGridColumnPinning;
+}
+
+/**
+ * Imperative access to a mounted grid, through `ref`.
+ *
+ * Everything in `state` is reachable without this. The handle is for what is not
+ * state: reading what the grid resolved its columns and rows to, and (through
+ * `createGridBridgeAdapter`) giving a bridge the same path a human's gesture takes.
+ */
+export interface FancyDataGridHandle {
+  /** Leaf column ids, in definition order, hidden ones included. */
+  getColumnIds: () => string[];
+  /** Ids of the rows in the current model: filtered, sorted, on this page. */
+  getRowIds: () => string[];
+  getColumnInfo: () => FancyGridColumnInfo[];
 }
 
 /**
@@ -75,6 +122,8 @@ export interface FancyGridVirtual {
 }
 
 export interface FancyDataGridProps<TRow = Record<string, unknown>> {
+  /** See {@link FancyDataGridHandle}. */
+  ref?: Ref<FancyDataGridHandle>;
   /**
    * Stable identity for this grid. Roots every `data-fancy-grid-*` handle, so an
    * agent can address one grid on a page holding several.

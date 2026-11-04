@@ -12,8 +12,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Column visibility, pinning and grouped headers**, all declared as JSON. `state.columnVisibility` (`false` hides; no entry means visible) and `state.columnPinning` (`{ left, right }`) are two new slices on the state object, and a column with `columns: [...]` is a group: a header with a real `colSpan` over its leaves, nesting as deep as you like. Nothing is on by default. **Consumer action:** none; an existing grid renders the same table.
+  - Pinned columns stick under horizontal and windowed scrolling. Offsets come from the width the browser actually laid out, not the declared one, because a table stretches and shrinks columns to fit. Pinned cells paint an opaque surface; a grid sitting on anything other than white or `zinc-900` should set `--fancy-grid-surface` on an ancestor to match.
+  - The row-number gutter sticks with left-pinned columns.
+  - A group straddling the pin boundary splits into two header cells, one stuck and one scrolling.
+  - The spreadsheet presentation (`columnLabels="letters"`) shows only the letter row, since letters address leaves.
+  - New handles: `data-fancy-grid-pinned="left|right"`, `data-fancy-grid-pinned-edge`, `data-fancy-grid-header-group="<id>"`, `data-fancy-grid-header-placeholder="<leafId>"`.
+- **A `ref` handle and `createGridBridgeAdapter(ref, { id, getState, setState })`** so `registerGridBridge` from `@particle-academy/agent-integrations` reaches the mounted grid. `getColumnIds()`, `getRowIds()` and `getColumnInfo()` for now. New exports: `createGridBridgeAdapter`, `FancyDataGridHandle`, `FancyGridBridgeAdapter`, `FancyGridBridgeAdapterOptions`, `FancyGridColumnInfo`, `FancyGridColumnPinning`.
+
 ### Fixed
 
+- **A controlled grid re-rendered forever and cut itself to 25 rows.** Any slice the caller omitted was a new `[]` on every render, which the engine read as a changed filter. It reset the page index, and that write reached `onStateChange` as an invented `pagination: { pageIndex: 0, pageSize: 25 }`. A host storing what it was given then showed 25 rows with no error, and queued the next render from the one before. A grid that WAS paged went back to page one on every render. Omitted slices now have one identity, and the reset only runs on a grid that has `pagination`. **Consumer action:** none, unless a saved view captured that invented `pagination`: remove it, or that grid stays paged at 25.
+- The empty row and the virtual spacers span what is visible, gutter included. They were `columns.length`, which was already short by one with `rowNumbers` on.
+- A column's declared `width` is now a floor as well as a preference (`min-width`). Auto table layout compressed it to min-content, so a wide table's "fixed" columns came out far narrower. **Consumer action:** none, though a table wider than its container now overflows where it used to squeeze, so make sure it has a scrolling parent.
+- `data-index` on a windowed row is its position in the model, not its original index. After a sort the two differ, and the virtualizer filed each row's measured height under some other row.
 - The README said `registerGridBridge` was still to come. It has shipped, from `@particle-academy/agent-integrations/bridges/grid`, and the README now says so. Consumer action: none.
 
 ### Changed
