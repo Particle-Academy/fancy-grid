@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The README said `registerGridBridge` was still to come. It has shipped, from `@particle-academy/agent-integrations/bridges/grid`, and the README now says so. Consumer action: none.
+
 ### Changed
 
 - Test environment: jsdom moved to 30 (devDependency only), dropping the deprecated `whatwg-encoding`. Consumer action: none.

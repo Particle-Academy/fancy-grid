@@ -124,8 +124,8 @@ Every element an agent might address carries one, rooted on `gridId`:
 
 Together with the controlled state contract, that is what an MCP bridge needs:
 an agent reads the grid, sorts it, filters it and points at one cell without
-scraping the DOM or guessing selectors. `registerGridBridge` in
-`@particle-academy/agent-integrations` is next.
+scraping the DOM or guessing selectors. `registerGridBridge` from
+`@particle-academy/agent-integrations/bridges/grid` is that bridge.
 
 ## License
 
