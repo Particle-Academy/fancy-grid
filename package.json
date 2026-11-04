@@ -68,7 +68,7 @@
     "agent"
   ],
   "peerDependencies": {
-    "@particle-academy/react-fancy": ">=6.7.0 <7.0.0",
+    "@particle-academy/react-fancy": ">=6.7.1 <7.0.0",
     "@tanstack/react-table": "^8.0.0",
     "@tanstack/react-virtual": "^3.0.0",
     "react": "^19.0.0",
