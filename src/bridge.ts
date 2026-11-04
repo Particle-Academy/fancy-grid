@@ -8,6 +8,12 @@ export interface FancyGridBridgeAdapterOptions {
   /** The same state the grid is controlled with. */
   getState: () => FancyGridState;
   setState: (next: FancyGridState) => void;
+  /**
+   * No writes through this bridge. `grid_edit_cell` is then not registered at all,
+   * so an agent learns it from the tool list rather than from a failed call. It is
+   * an option because the adapter is built before the grid has mounted.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -21,6 +27,10 @@ export interface FancyGridBridgeAdapter extends FancyGridBridgeAdapterOptions {
   getColumnIds: () => string[];
   getRowIds: () => string[];
   getColumnInfo: () => FancyGridColumnInfo[];
+  /** Absent when `readOnly`. Throws what the grid refused. */
+  editCell?: (rowId: string, columnId: string, value: unknown) => Promise<void>;
+  /** The refusal `editCell` would give, or `null`. Writes nothing. */
+  validateCell?: (rowId: string, columnId: string, value: unknown) => string | null;
 }
 
 /**
@@ -44,5 +54,17 @@ export function createGridBridgeAdapter(
     getColumnIds: () => grid().getColumnIds(),
     getRowIds: () => grid().getRowIds(),
     getColumnInfo: () => grid().getColumnInfo(),
+    ...(options.readOnly
+      ? {}
+      : {
+          editCell: async (rowId: string, columnId: string, value: unknown) => {
+            const result = await grid().editCell(rowId, columnId, value, { source: "agent" });
+            if (!result.ok) throw new Error(result.error);
+          },
+          validateCell: (rowId: string, columnId: string, value: unknown) => {
+            const result = grid().validateCell(rowId, columnId, value);
+            return result.ok ? null : result.error;
+          },
+        }),
   };
 }

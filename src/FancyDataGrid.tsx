@@ -1,4 +1,15 @@
-import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+} from "react";
 import {
   flexRender,
   getCoreRowModel,
@@ -14,7 +25,16 @@ import {
   type SortingState,
   type VisibilityState,
 } from "@tanstack/react-table";
-import type { FancyDataGridProps, FancyGridColumn, FancyGridState } from "./types";
+import { coerceCellValue, isSameCellValue, resolveEditor } from "./editing";
+import type {
+  FancyDataGridProps,
+  FancyGridCellEdit,
+  FancyGridCellRef,
+  FancyGridColumn,
+  FancyGridEditResult,
+  FancyGridEditing,
+  FancyGridState,
+} from "./types";
 
 /** Read a dot-path out of a row. Missing segments yield `undefined`, never throw. */
 function readPath(row: unknown, path: string): unknown {
@@ -133,6 +153,28 @@ function usePinnedWidths(
 }
 
 /**
+ * Scroll a focused cell out from under the pinned columns.
+ *
+ * A cell beneath a sticky column is inside the scrollport, so to the browser it is
+ * already in view and `focus()` scrolls nothing: the active cell is simply hidden.
+ * `scroll-margin` does not cover it either. It widens the box being aligned, and
+ * with margins on both sides that box outgrows the gap between the pins.
+ */
+function revealPastPins(cell: HTMLElement | null, leftEdge: number, rightEdge: number): void {
+  if (!cell || cell.hasAttribute("data-fancy-grid-pinned") || leftEdge + rightEdge === 0) return;
+  let scroller = cell.parentElement;
+  while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowX)) scroller = scroller.parentElement;
+  if (!scroller) return;
+
+  const box = scroller.getBoundingClientRect();
+  const rect = cell.getBoundingClientRect();
+  const clearLeft = box.left + scroller.clientLeft + leftEdge;
+  const clearRight = box.left + scroller.clientLeft + scroller.clientWidth - rightEdge;
+  if (rect.left < clearLeft) scroller.scrollLeft -= clearLeft - rect.left;
+  else if (rect.right > clearRight) scroller.scrollLeft += rect.right - clearRight;
+}
+
+/**
  * Opaque, because the body scrolls underneath. The surface is a token since the
  * grid cannot know what it sits on: set `--fancy-grid-surface` on any ancestor to
  * match a card that is not the default. The bottom rule is a shadow rather than a
@@ -212,6 +254,9 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
   className,
   columnLabels = "header",
   rowNumbers = false,
+  onCellEdit,
+  validateCell,
+  controls,
 }: FancyDataGridProps<TRow>) {
   /** 0 -> A, 25 -> Z, 26 -> AA. Spreadsheet column labels are base-26 bijective. */
   const columnLetter = (index: number): string => {
@@ -232,13 +277,19 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
   // One channel for every state change: the caller always receives the FULL
   // next state, so a controlled host never has to merge slices to know what the
   // grid is showing — and neither does an agent reading it back.
+  // Read through a ref because a write can settle long after the render that
+  // started it, and merging into that render's state would undo everything since.
+  const latest = useRef(current);
+  useLayoutEffect(() => {
+    latest.current = current;
+  });
   const emit = useCallback(
     (patch: Partial<FancyGridState>) => {
-      const next = { ...current, ...patch };
+      const next = { ...latest.current, ...patch };
       if (state === undefined) setInternal(next);
       onStateChange?.(next);
     },
-    [current, state, onStateChange],
+    [state, onStateChange],
   );
 
   const tanstackColumns = useMemo<ColumnDef<TRow>[]>(() => columns.map(toEngineColumn), [columns]);
@@ -379,7 +430,284 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
     };
   };
 
+  const interactive = leaves.some((leaf) => resolveEditor(leaf.column) !== null);
+
+  /**
+   * The path every write takes, whoever made it. Column rules, then the host's
+   * validator, and only then is it an edit.
+   */
+  const checkEdit = (
+    rowId: string,
+    columnId: string,
+    raw: unknown,
+    source: FancyGridCellEdit["source"],
+  ): { failure: Extract<FancyGridEditResult, { ok: false }> } | { edit: FancyGridCellEdit; changed: boolean } => {
+    const refuse = (code: Extract<FancyGridEditResult, { ok: false }>["code"], error: string) => ({
+      failure: { ok: false as const, code, error },
+    });
+    const column = leafById.get(columnId);
+    if (!column) return refuse("unknown-column", `Unknown column "${columnId}".`);
+    const row = table.getCoreRowModel().rowsById[rowId];
+    if (!row) return refuse("unknown-row", `Unknown row "${rowId}".`);
+    const editor = resolveEditor(column);
+    if (!editor) return refuse("not-editable", `Column "${columnId}" is not editable.`);
+
+    const coerced = coerceCellValue(editor, raw);
+    if (!coerced.ok) return refuse("invalid", coerced.error);
+
+    const accessor = column.accessor ?? column.id;
+    const previous = readPath(row.original, accessor);
+    const edit: FancyGridCellEdit = { rowId, columnId, accessor, value: coerced.value, previous, source };
+    const hostRefusal = validateCell?.(edit);
+    if (hostRefusal) return refuse("invalid", hostRefusal);
+
+    return { edit, changed: !isSameCellValue(previous, coerced.value) };
+  };
+
+  /** Hand an edit to the host. Synchronous when the host is, so a sync host gets one state change. */
+  const deliverEdit = (edit: FancyGridCellEdit): FancyGridEditResult | Promise<FancyGridEditResult> => {
+    const rejected = (error: string): FancyGridEditResult => ({ ok: false, code: "rejected", error });
+    const settled = (out: void | { error: string }): FancyGridEditResult =>
+      out && typeof out === "object" && "error" in out
+        ? rejected(out.error)
+        : { ok: true, value: edit.value, changed: true };
+    const failed = (e: unknown) => rejected(e instanceof Error ? e.message : String(e));
+
+    if (!onCellEdit) return rejected("This grid has no onCellEdit to receive the write.");
+    try {
+      const out = onCellEdit(edit);
+      return out instanceof Promise ? out.then(settled, failed) : settled(out);
+    } catch (e) {
+      return failed(e);
+    }
+  };
+
+  const applyEdit = async (
+    rowId: string,
+    columnId: string,
+    raw: unknown,
+    source: FancyGridCellEdit["source"],
+  ): Promise<FancyGridEditResult> => {
+    const check = checkEdit(rowId, columnId, raw, source);
+    if ("failure" in check) return check.failure;
+    if (!check.changed) return { ok: true, value: check.edit.value, changed: false };
+    return deliverEdit(check.edit);
+  };
+
+  const draftFor = (rowId: string, columnId: string): unknown => {
+    const row = table.getCoreRowModel().rowsById[rowId];
+    const column = leafById.get(columnId);
+    const value = row && column ? readPath(row.original, column.accessor ?? column.id) : null;
+    return value ?? null;
+  };
+
+  /** Columns in the order they are on screen, which pinning changes. */
+  const displayColumns = () =>
+    [...leftLeaves, ...table.getCenterVisibleLeafColumns(), ...rightLeaves].map((c) => c.id);
+
+  const warnedNoControls = useRef(false);
+  const startEditing = (rowId: string, columnId: string): void => {
+    const editor = resolveEditor(leafById.get(columnId));
+    if (!editor) return;
+    if (!controls?.[editor.type]) {
+      if (process.env.NODE_ENV !== "production" && !warnedNoControls.current) {
+        warnedNoControls.current = true;
+        console.warn(
+          `[fancy-grid] Grid "${gridId}": column "${columnId}" is editable but no \`controls\` supply a ` +
+            `"${editor.type}" editor, so none can open. Pass \`fancyGridControls\` from ` +
+            "@particle-academy/fancy-grid/controls. Agents can still write through the handle.",
+        );
+      }
+      return;
+    }
+    emit({ activeCell: { rowId, columnId }, editing: { rowId, columnId, draft: draftFor(rowId, columnId), error: null } });
+  };
+
+  /**
+   * Commit the open editor. On success, `next` says where focus goes; on a refusal
+   * the editor stays where it is with the message on it.
+   */
+  const commitEditing = (next: { activeCell: FancyGridCellRef; open?: boolean }): void => {
+    const editing = latest.current.editing;
+    if (!editing || editing.pending) return;
+    const { rowId, columnId, draft } = editing;
+    const isStillOpen = () => {
+      const open = latest.current.editing;
+      return open?.rowId === rowId && open.columnId === columnId;
+    };
+    const finish = () =>
+      emit({
+        activeCell: next.activeCell,
+        editing: next.open
+          ? { ...next.activeCell, draft: draftFor(next.activeCell.rowId, next.activeCell.columnId), error: null }
+          : null,
+      });
+    const refuse = (held: FancyGridEditing, error: string) => emit({ editing: { ...held, pending: false, error } });
+
+    const check = checkEdit(rowId, columnId, draft, "human");
+    if ("failure" in check) return refuse(editing, check.failure.error);
+    if (!check.changed) return finish();
+
+    const delivered = deliverEdit(check.edit);
+    if (delivered instanceof Promise) {
+      emit({ editing: { ...editing, pending: true, error: null } });
+      void delivered.then((result) => {
+        if (!isStillOpen()) return; // Cancelled while it was in flight.
+        if (result.ok) finish();
+        else refuse(editing, result.error);
+      });
+    } else if (delivered.ok) {
+      finish();
+    } else {
+      refuse(editing, delivered.error);
+    }
+  };
+
+  /** The next editable cell in reading order, or `null` at either end of the table. */
+  const nextEditableCell = (from: FancyGridCellRef, direction: 1 | -1): FancyGridCellRef | null => {
+    const order = displayColumns();
+    const rowIds = modelRows.map((r) => r.id);
+    let r = rowIds.indexOf(from.rowId);
+    let c = order.indexOf(from.columnId);
+    if (r < 0 || c < 0) return null;
+    for (;;) {
+      c += direction;
+      if (c < 0 || c >= order.length) {
+        r += direction;
+        c = direction === 1 ? 0 : order.length - 1;
+      }
+      if (r < 0 || r >= rowIds.length) return null;
+      if (resolveEditor(leafById.get(order[c]))) return { rowId: rowIds[r], columnId: order[c] };
+    }
+  };
+
+  // Focus follows the state, so an agent or a host moving the active cell moves it
+  // too. It only ever moves if the person is already in the grid: `wantsFocus` is
+  // set by a gesture here and cleared when focus goes somewhere else on purpose.
+  const wantsFocus = useRef(false);
+  useEffect(() => {
+    const root = tableRef.current;
+    if (!interactive || !wantsFocus.current || !root) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && !root.contains(active)) return;
+
+    const editorInput = root.querySelector<HTMLElement>(
+      "[data-fancy-grid-editor] input:not([type=hidden]), [data-fancy-grid-editor] select, [data-fancy-grid-editor] textarea",
+    );
+    if (editorInput) {
+      if (active === editorInput) return;
+      editorInput.focus();
+      if (editorInput instanceof HTMLInputElement) editorInput.select();
+      revealPastPins(editorInput.closest("td"), leftEdge, rightEdge);
+      return;
+    }
+    const cell = root.querySelector<HTMLElement>("[data-fancy-grid-active]");
+    if (cell && !cell.contains(active)) {
+      cell.focus();
+      revealPastPins(cell, leftEdge, rightEdge);
+    }
+  });
+
+  const cellFrom = (target: EventTarget | null): (FancyGridCellRef & { el: HTMLElement }) | null => {
+    if (!(target instanceof Element)) return null;
+    const el = target.closest<HTMLElement>("[data-fancy-grid-cell]");
+    const rowId = el?.getAttribute("data-fancy-grid-cell-row");
+    const columnId = el?.getAttribute("data-fancy-grid-cell");
+    return el && rowId !== null && rowId !== undefined && columnId ? { el, rowId, columnId } : null;
+  };
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLTableElement>): void => {
+    if (e.nativeEvent.isComposing) return;
+    wantsFocus.current = true;
+    const editing = latest.current.editing;
+
+    if (editing) {
+      if (!(e.target instanceof Element) || !e.target.closest("[data-fancy-grid-editor]")) return;
+      const here = { rowId: editing.rowId, columnId: editing.columnId };
+
+      if (e.key === "Escape") {
+        e.preventDefault();
+        emit({ editing: null, activeCell: here });
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const below = modelRows[modelRows.findIndex((r) => r.id === editing.rowId) + 1];
+        commitEditing({ activeCell: below ? { rowId: below.id, columnId: editing.columnId } : here });
+      } else if (e.key === "Tab") {
+        const target = nextEditableCell(here, e.shiftKey ? -1 : 1);
+        const check = checkEdit(here.rowId, here.columnId, editing.draft, "human");
+        // Off the end of the table, a valid cell lets focus leave as Tab should.
+        if (target || "failure" in check || editing.pending) e.preventDefault();
+        commitEditing(target ? { activeCell: target, open: true } : { activeCell: here });
+      }
+      return;
+    }
+
+    // Only a key pressed ON a cell. One pressed on a button inside a custom cell
+    // belongs to that button.
+    const from = e.target instanceof HTMLElement && e.target.hasAttribute("data-fancy-grid-cell") ? cellFrom(e.target) : null;
+    if (!from || e.altKey || e.ctrlKey || e.metaKey) return;
+
+    if (e.key === "Enter" || e.key === "F2") {
+      e.preventDefault();
+      startEditing(from.rowId, from.columnId);
+      return;
+    }
+
+    const steps: Record<string, [number, number]> = {
+      ArrowLeft: [0, -1],
+      ArrowRight: [0, 1],
+      ArrowUp: [-1, 0],
+      ArrowDown: [1, 0],
+    };
+    const step = steps[e.key];
+    if (!step) return;
+    e.preventDefault();
+
+    const order = displayColumns();
+    const r = modelRows.findIndex((row) => row.id === from.rowId);
+    const c = order.indexOf(from.columnId);
+    const nextR = Math.min(Math.max(r + step[0], 0), modelRows.length - 1);
+    const nextC = Math.min(Math.max(c + step[1], 0), order.length - 1);
+    if (virtual && !virtual.items.some((item) => item.index === nextR)) virtual.scrollToIndex?.(nextR);
+    emit({ activeCell: { rowId: modelRows[nextR].id, columnId: order[nextC] } });
+  };
+
+  const handleFocus = (e: FocusEvent<HTMLTableElement>): void => {
+    wantsFocus.current = true;
+    const to = cellFrom(e.target);
+    if (!to) return;
+    const editing = latest.current.editing;
+    const target = { rowId: to.rowId, columnId: to.columnId };
+    if (editing) {
+      // A click on another cell commits this one. If it is refused, the editor
+      // stays open and the focus effect takes the person back to it.
+      if (editing.rowId !== to.rowId || editing.columnId !== to.columnId) commitEditing({ activeCell: target });
+      return;
+    }
+    const active = latest.current.activeCell;
+    if (active?.rowId !== to.rowId || active.columnId !== to.columnId) emit({ activeCell: target });
+  };
+
+  const handleBlur = (e: FocusEvent<HTMLTableElement>): void => {
+    // `relatedTarget` is null when a focused row leaves the virtual window, and
+    // that must not count as the person having gone elsewhere.
+    if (e.relatedTarget instanceof Node && !e.currentTarget.contains(e.relatedTarget)) wantsFocus.current = false;
+  };
+
+  const handleDoubleClick = (e: MouseEvent<HTMLTableElement>): void => {
+    const from = cellFrom(e.target);
+    if (from && !latest.current.editing) {
+      wantsFocus.current = true;
+      startEditing(from.rowId, from.columnId);
+    }
+  };
+
   useImperativeHandle(ref, () => ({
+    editCell: (rowId, columnId, value, options) => applyEdit(rowId, columnId, value, options?.source ?? "agent"),
+    validateCell: (rowId, columnId, value) => {
+      const check = checkEdit(rowId, columnId, value, "agent");
+      return "failure" in check ? check.failure : { ok: true, value: check.edit.value, changed: check.changed };
+    },
     getColumnIds: () => leaves.map((leaf) => leaf.column.id),
     getRowIds: () => table.getRowModel().rows.map((row) => row.id),
     getColumnInfo: () =>
@@ -391,6 +719,7 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
         pinned: pinning.left?.includes(column.id) ? "left" : pinning.right?.includes(column.id) ? "right" : null,
         sortable: column.sortable ?? false,
         filterable: column.filterable ?? false,
+        editor: resolveEditor(column),
       })),
   }));
 
@@ -403,6 +732,7 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
       ? Math.max(0, virtual.totalSize - virtual.items[virtual.items.length - 1].end)
       : 0;
 
+  const activeShown = visible.some((v) => v.row.id === current.activeCell?.rowId);
   const columnSpan = table.getVisibleLeafColumns().length + (rowNumbers ? 1 : 0);
   // Built per family rather than from `getHeaderGroups()`, which merges a group
   // straddling the pin boundary into one cell: it would then be wholly stuck or
@@ -422,7 +752,11 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
       ref={tableRef}
       data-fancy-grid={gridId}
       data-fancy-grid-server-side={serverSide || undefined}
+      role={interactive ? "grid" : undefined}
       className={["w-full border-collapse text-sm", className].filter(Boolean).join(" ")}
+      {...(interactive
+        ? { onKeyDown: handleKeyDown, onFocus: handleFocus, onBlur: handleBlur, onDoubleClick: handleDoubleClick }
+        : {})}
     >
       <thead>
         {shownHeaderGroups.map((group, groupIndex) => (
@@ -531,7 +865,7 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
           </tr>
         )}
 
-        {visible.map(({ row, position }) => (
+        {visible.map(({ row, position }, rowIndex) => (
           <tr
             key={row.id}
             data-fancy-grid-row={row.id}
@@ -558,24 +892,66 @@ export function FancyDataGrid<TRow = Record<string, unknown>>({
               // A1 addresses the first DATA row as 1.
               const address = spreadsheet ? `${columnLetter(colIndex)}${row.index + 1}` : null;
               const pin = pinProps([cell.column.id]);
+              const editor = resolveEditor(col);
+              const isActive = current.activeCell?.rowId === row.id && current.activeCell.columnId === cell.column.id;
+              const isEditing = current.editing?.rowId === row.id && current.editing.columnId === cell.column.id;
+              const Control = isEditing && editor ? controls?.[editor.type] : undefined;
+              // One tab stop in the whole grid: the active cell, or the first one.
+              const isTabStop = isActive || (!activeShown && rowIndex === 0 && colIndex === 0);
 
               return (
                 <td
                   key={cell.id}
                   data-fancy-grid-cell={cell.column.id}
+                  data-fancy-grid-cell-row={row.id}
                   data-fancy-grid-address={address ?? undefined}
+                  data-fancy-grid-editable={editor ? "" : undefined}
+                  data-fancy-grid-active={isActive ? "" : undefined}
+                  data-fancy-grid-editing={Control ? "" : undefined}
+                  aria-invalid={Control && current.editing?.error ? true : undefined}
+                  tabIndex={interactive ? (isTabStop ? 0 : -1) : undefined}
                   {...pin?.attrs}
                   style={pin?.style}
                   className={[
                     "px-3 py-2 text-zinc-800 dark:text-zinc-200",
                     ALIGN[col?.align ?? "start"],
+                    interactive ? "outline-none" : "",
+                    isActive && !Control ? "outline-2 -outline-offset-2 outline-blue-500" : "",
+                    Control ? "!p-1" : "",
                     pin ? PINNED_CELL : "",
                     pin?.seam ?? "",
                   ]
                     .filter(Boolean)
                     .join(" ")}
                 >
-                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  {Control && editor && current.editing ? (
+                    <>
+                      <div data-fancy-grid-editor={editor.type}>
+                        <Control
+                          editor={editor}
+                          draft={current.editing.draft}
+                          onDraftChange={(draft) => {
+                            const open = latest.current.editing;
+                            if (open) emit({ editing: { ...open, draft, error: null } });
+                          }}
+                          invalid={Boolean(current.editing.error)}
+                          disabled={Boolean(current.editing.pending)}
+                          label={col?.header ?? cell.column.id}
+                        />
+                      </div>
+                      {current.editing.error ? (
+                        <p
+                          role="alert"
+                          data-fancy-grid-edit-error=""
+                          className="mt-1 px-1 text-xs font-normal text-red-600 dark:text-red-400"
+                        >
+                          {current.editing.error}
+                        </p>
+                      ) : null}
+                    </>
+                  ) : (
+                    flexRender(cell.column.columnDef.cell, cell.getContext())
+                  )}
                 </td>
               );
             })}

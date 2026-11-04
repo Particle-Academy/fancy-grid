@@ -58,5 +58,6 @@ export function useGridVirtualizer({
     })),
     totalSize: virtualizer.getTotalSize(),
     measureElement: virtualizer.measureElement,
+    scrollToIndex: (index) => virtualizer.scrollToIndex(index),
   };
 }

@@ -42,14 +42,34 @@ describe("dependency contract", () => {
  * whether or not the consumer virtualizes anything. That is why windowing lives
  * on its own entry, and why this is worth a test rather than a comment.
  */
+const dist = (file: string) => {
+  try {
+    return readFileSync(join(root, "dist", file), "utf8");
+  } catch {
+    return null;
+  }
+};
+
 describe("entry isolation", () => {
-  const dist = (file: string) => {
-    try {
-      return readFileSync(join(root, "dist", file), "utf8");
-    } catch {
-      return null;
+  it("keeps react-fancy an optional peer, on the /controls entry only", () => {
+    // A read-only grid must not have to install a component kit to show a table.
+    expect(pkg.peerDependencies["@particle-academy/react-fancy"]).toBeDefined();
+    expect(pkg.peerDependenciesMeta["@particle-academy/react-fancy"].optional).toBe(true);
+    expect(pkg.exports["./controls"]).toBeDefined();
+
+    for (const file of ["index.js", "index.cjs", "virtual.js", "virtual.cjs"]) {
+      const source = dist(file);
+      if (source === null) continue;
+      expect(source, file).not.toContain("react-fancy");
     }
-  };
+  });
+
+  it("does not bundle react-fancy into the /controls entry", () => {
+    const source = dist("controls.js");
+    if (source === null) return;
+    expect(source).toMatch(/from ['"]@particle-academy\/react-fancy\/number-field['"]/);
+    expect(source).not.toContain("data-react-fancy-number-field");
+  });
 
   it("never references the virtualizer from the root entry", () => {
     for (const file of ["index.js", "index.cjs"]) {

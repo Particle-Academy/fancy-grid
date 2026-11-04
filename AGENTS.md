@@ -71,9 +71,23 @@ npm run build # tsup
 - **Handles are asserted in tests.** They are the agent-facing API; if they move,
   every agent that learned this grid breaks silently — it finds nothing and
   reports nothing.
-- **No `react-fancy` dependency.** The grid is structural and matches the suite's
-  Tailwind vocabulary without an import. Adding it for two buttons is not worth a
-  peer.
+- **`react-fancy` is an OPTIONAL peer, on the `./controls` entry only.** The grid
+  itself is structural and matches the suite's Tailwind vocabulary without an
+  import, and a read-only grid must not have to install a component kit. Anything
+  interactive (cell editors, paste review buttons) is a `FancyGridControls` entry
+  the root takes as a prop, and `./controls` is where those are built from
+  `react-fancy`. The same reason `./virtual` is separate, and a dist-level test
+  pins it. There is no hand-rolled fallback: without `controls`, no editor opens.
+- **Every write takes one path.** `checkEdit` then `deliverEdit` in
+  `FancyDataGrid.tsx`, whether it came from a keystroke, the handle or a bridge.
+  `coerceCellValue` in `src/editing.ts` is the only definition of a valid cell. A
+  second path is how a value ends up accepted from an agent and refused from a human.
+- **The grid never holds an edit of its own and never changes `rows`.** The active
+  cell, the open editor and its draft are all in `state`, so an agent can read them
+  and a virtual window can drop a row without losing a half-typed value.
+- **A cell under a sticky column looks in view to the browser.** `focus()` will not
+  scroll it out, and `scroll-margin` does not fix that. `revealPastPins` does, and
+  only a real browser can tell the difference.
 - `process.env.NODE_ENV` is declared in `src/env.d.ts` rather than by installing
   `@types/node` — this is a browser package, and Node's globals must not
   typecheck clean here.

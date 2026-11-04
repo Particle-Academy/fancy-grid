@@ -1,4 +1,16 @@
-import type { Key, ReactNode, Ref } from "react";
+import type { ComponentType, Key, ReactNode, Ref } from "react";
+
+/** A select option: its text, or a stored value with a different label. */
+export type FancyGridSelectOption = string | { value: string; label: string };
+
+/**
+ * How a column is edited, as JSON. The same declaration governs a human's editor,
+ * an agent's tool call and a paste, so all three accept and refuse the same values.
+ */
+export type FancyGridEditor =
+  | { type: "text"; required?: boolean; maxLength?: number; placeholder?: string }
+  | { type: "number"; required?: boolean; min?: number; max?: number; step?: number; placeholder?: string }
+  | { type: "select"; required?: boolean; options: FancyGridSelectOption[]; placeholder?: string };
 
 /**
  * A column, described as data rather than as React.
@@ -32,6 +44,11 @@ export interface FancyGridColumn<TRow = Record<string, unknown>> {
    * address leaves, because those are what have cells.
    */
   columns?: FancyGridColumn<TRow>[];
+  /**
+   * Makes the cells editable: `true` for text, or a {@link FancyGridEditor}. Writes
+   * go to `onCellEdit`; the grid never changes `rows` itself.
+   */
+  editable?: boolean | FancyGridEditor;
 }
 
 /** One sort instruction. Mirrors TanStack's `SortingState` entry exactly. */
@@ -67,6 +84,67 @@ export interface FancyGridColumnInfo {
   pinned: "left" | "right" | null;
   sortable: boolean;
   filterable: boolean;
+  /** What the column accepts, or `null` if it is read-only. */
+  editor: FancyGridEditor | null;
+}
+
+/** One cell, by identity. Row id and column id, never positions. */
+export interface FancyGridCellRef {
+  rowId: string;
+  columnId: string;
+}
+
+/**
+ * The editor that is open, as state. It lives here rather than inside the grid so
+ * an agent can read what a human is typing, and so the draft survives a virtual
+ * window dropping the row while it scrolls past.
+ */
+export interface FancyGridEditing extends FancyGridCellRef {
+  /** What is typed so far. Text until it validates; not yet a stored value. */
+  draft: unknown;
+  /** Why the last commit was refused. */
+  error?: string | null;
+  /** A write is in flight; the editor is held. */
+  pending?: boolean;
+}
+
+/** One write, as the host receives it. All JSON. */
+export interface FancyGridCellEdit extends FancyGridCellRef {
+  /** The column's dot-path, for a host that writes generically. */
+  accessor: string;
+  /** Validated and coerced: a number column gets a number or `null`. */
+  value: unknown;
+  previous: unknown;
+  source: "human" | "agent";
+}
+
+export type FancyGridEditFailure = "unknown-row" | "unknown-column" | "not-editable" | "invalid" | "rejected";
+
+export type FancyGridEditResult =
+  | { ok: true; value: unknown; changed: boolean }
+  | { ok: false; code: FancyGridEditFailure; error: string };
+
+/** Props for one editor control. See `@particle-academy/fancy-grid/controls`. */
+export interface FancyGridEditorProps {
+  editor: FancyGridEditor;
+  draft: unknown;
+  onDraftChange: (next: unknown) => void;
+  invalid: boolean;
+  disabled: boolean;
+  /** The column's header, for an accessible name. */
+  label: string;
+}
+
+/**
+ * What the grid renders its interactive parts with.
+ *
+ * Supplied rather than imported so a read-only grid never installs `react-fancy`.
+ * `fancyGridControls` from `./controls` is the kit's set.
+ */
+export interface FancyGridControls {
+  text?: ComponentType<FancyGridEditorProps>;
+  number?: ComponentType<FancyGridEditorProps>;
+  select?: ComponentType<FancyGridEditorProps>;
 }
 
 /**
@@ -90,6 +168,10 @@ export interface FancyGridState {
   columnVisibility?: Record<string, boolean>;
   /** An id named on both sides is pinned left. */
   columnPinning?: FancyGridColumnPinning;
+  /** The cell keyboard navigation is on. */
+  activeCell?: FancyGridCellRef | null;
+  /** The open editor. See {@link FancyGridEditing}. */
+  editing?: FancyGridEditing | null;
 }
 
 /**
@@ -105,6 +187,18 @@ export interface FancyDataGridHandle {
   /** Ids of the rows in the current model: filtered, sorted, on this page. */
   getRowIds: () => string[];
   getColumnInfo: () => FancyGridColumnInfo[];
+  /**
+   * Write one cell through the path a human's commit takes: the column's rules,
+   * then `validateCell`, then `onCellEdit`. Never rejects; a refusal is a result.
+   */
+  editCell: (
+    rowId: string,
+    columnId: string,
+    value: unknown,
+    options?: { source?: FancyGridCellEdit["source"] },
+  ) => Promise<FancyGridEditResult>;
+  /** The same checks, writing nothing. */
+  validateCell: (rowId: string, columnId: string, value: unknown) => FancyGridEditResult;
 }
 
 /**
@@ -119,6 +213,8 @@ export interface FancyGridVirtual {
   items: { index: number; start: number; end: number; key: Key }[];
   totalSize: number;
   measureElement?: (el: HTMLElement | null) => void;
+  /** Lets keyboard navigation bring a row outside the window into view. */
+  scrollToIndex?: (index: number) => void;
 }
 
 export interface FancyDataGridProps<TRow = Record<string, unknown>> {
@@ -173,6 +269,19 @@ export interface FancyDataGridProps<TRow = Record<string, unknown>> {
   columnLabels?: "header" | "letters";
   /** Render the row-number gutter down the left edge. */
   rowNumbers?: boolean;
+  /**
+   * Receives every write, human or agent. Return `{ error }` or throw to refuse;
+   * the message is shown on the cell. May be async, in which case the editor holds
+   * until it settles. Without this prop, no write can succeed.
+   */
+  onCellEdit?: (edit: FancyGridCellEdit) => void | { error: string } | Promise<void | { error: string }>;
+  /** A host's own rule, run after the column's. Return a message to refuse. */
+  validateCell?: (edit: FancyGridCellEdit) => string | null | undefined;
+  /**
+   * Controls for the interactive parts. Without them an editable column still takes
+   * writes through the handle, but no editor can open.
+   */
+  controls?: FancyGridControls;
   /** Shown when there are no rows. */
   emptyMessage?: ReactNode;
   className?: string;

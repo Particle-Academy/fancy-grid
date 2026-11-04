@@ -32,6 +32,16 @@
         "types": "./dist/virtual.d.cts",
         "default": "./dist/virtual.cjs"
       }
+    },
+    "./controls": {
+      "import": {
+        "types": "./dist/controls.d.ts",
+        "default": "./dist/controls.js"
+      },
+      "require": {
+        "types": "./dist/controls.d.cts",
+        "default": "./dist/controls.cjs"
+      }
     }
   },
   "files": [
@@ -58,17 +68,22 @@
     "agent"
   ],
   "peerDependencies": {
+    "@particle-academy/react-fancy": ">=6.7.0 <7.0.0",
     "@tanstack/react-table": "^8.0.0",
     "@tanstack/react-virtual": "^3.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "peerDependenciesMeta": {
+    "@particle-academy/react-fancy": {
+      "optional": true
+    },
     "@tanstack/react-virtual": {
       "optional": true
     }
   },
   "devDependencies": {
+    "@particle-academy/react-fancy": "^6.7.1",
     "@tanstack/react-table": "^8.21.3",
     "@tanstack/react-virtual": "^3.13.12",
     "@types/react": "^19.2.18",

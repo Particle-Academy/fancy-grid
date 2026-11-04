@@ -68,6 +68,8 @@ state — never a slice to merge:
   pagination?:    { pageIndex: number; pageSize: number };
   columnVisibility?: Record<string, boolean>;       // false hides; no entry shows
   columnPinning?:    { left?: string[]; right?: string[] };
+  activeCell?:       { rowId: string; columnId: string } | null;
+  editing?:          { rowId: string; columnId: string; draft: unknown; error?: string | null; pending?: boolean } | null;
 }
 ```
 
@@ -118,6 +120,59 @@ no declared `width` is fine. Pinned cells paint an opaque surface, white or
 .my-card { --fancy-grid-surface: #fafaf9; }
 ```
 
+## Editing
+
+Declare it on the column. It is JSON, so an agent can emit it too:
+
+```tsx
+import { fancyGridControls } from "@particle-academy/fancy-grid/controls";
+
+const columns: FancyGridColumn[] = [
+  { id: "title", header: "Title", editable: { type: "text", required: true, maxLength: 80 } },
+  { id: "count", header: "Count", editable: { type: "number", min: 0 } },
+  { id: "stage", header: "Stage", editable: { type: "select", options: ["new", { value: "done", label: "Finished" }] } },
+  { id: "notes", header: "Notes", editable: true }, // true is a text cell
+];
+
+<FancyDataGrid
+  columns={columns}
+  rows={rows}
+  state={state}
+  onStateChange={setState}
+  controls={fancyGridControls}
+  onCellEdit={async ({ rowId, columnId, value }) => {
+    // Return { error: "..." } or throw to refuse; the message shows on the cell.
+    await save(rowId, columnId, value);
+    setRows((prev) => prev.map((r) => (r.id === rowId ? { ...r, [columnId]: value } : r)));
+  }}
+/>
+```
+
+`./controls` is its own entry because `react-fancy` is an **optional peer**:
+`npm install @particle-academy/react-fancy`. A read-only grid never needs it.
+Without `controls`, no editor can open, though the handle still takes writes.
+
+The grid **never changes `rows`**. `onCellEdit` receives `{ rowId, columnId, accessor,
+value, previous, source }`, with `value` already validated and coerced: a number
+column gives a number or `null`, and a blank is `null`, never `0`.
+
+| Key | Not editing | Editing |
+|---|---|---|
+| Arrows | move the active cell | belong to the input |
+| Enter / F2 | open the editor | Enter commits and moves down |
+| Tab | leaves the grid | commits and opens the next editable cell |
+| Shift+Tab | leaves the grid | commits and opens the previous one |
+| Escape | | cancels and restores |
+
+A double click also opens. A click on another cell commits; moving focus out of the
+grid does not. If a commit is refused, the editor stays open with the message on it.
+
+**Agents take the same path.** `ref.current.editCell(rowId, columnId, value)` applies
+the column's rules, then your `validateCell`, then `onCellEdit` with `source: "agent"`,
+and resolves to a result rather than throwing, so a value refused from the keyboard
+is refused from a tool call with the same words. The open editor's `draft` is in
+`state`, so an agent can see what a person is typing before it writes.
+
 ## Server-side mode
 
 ```tsx
@@ -165,6 +220,12 @@ Every element an agent might address carries one, rooted on `gridId`:
 | `data-fancy-grid-row="<rowId>"` | each row |
 | `data-fancy-grid-selected` | a selected row |
 | `data-fancy-grid-cell="<columnId>"` | each cell |
+| `data-fancy-grid-cell-row="<rowId>"` | each cell |
+| `data-fancy-grid-editable` | a cell that can be edited |
+| `data-fancy-grid-active` | the active cell |
+| `data-fancy-grid-editing` | the cell with the open editor |
+| `data-fancy-grid-editor="text\|number\|select"` | the editor inside it |
+| `data-fancy-grid-edit-error` | why its last commit was refused |
 | `data-fancy-grid-empty` | the empty state |
 
 Together with the controlled state contract, that is what an MCP bridge needs:
