@@ -1,101 +1,103 @@
-# AGENTS.md — fancy-grid
+# Using @particle-academy/fancy-grid — guide for agents
 
-A data grid on TanStack Table + Virtual. `CLAUDE.md` points here. Read the
-envelope's `AGENTS.md` too.
+How an agent installs and uses this package in a consumer app. What the package
+is, is in [README.md](./README.md). Notes for working ON this repo's code are in
+[CONTRIBUTING.md](./CONTRIBUTING.md).
 
-## The rule that shapes this repo
-
-**TanStack is supported, never depended on.** The engines are peers, nothing is
-bundled, and installing `fancy-grid` is the ONLY way anyone in this suite ends
-up with a TanStack table engine in their tree. No other Fancy package may gain a
-TanStack dependency because this one exists.
-
-Concretely, and asserted in `tests/packaging.test.ts`:
-
-- `dependencies` is empty and stays empty.
-- `@tanstack/react-table` is a required peer; `@tanstack/react-virtual` an
-  optional one.
-- Neither is ever added to `noExternal` in `tsup.config.ts`. Bundling one puts a
-  second copy in a consumer's tree — `fancy-flow` bundling `@xyflow/react`
-  shipped zustand@4 to everyone and made `fancy-screens` impossible to
-  co-install, and nothing reported it, because a resolver quietly choosing an
-  older version looks exactly like success.
-- **The root entry never imports `@tanstack/react-virtual`.** An optional peer
-  imported from the root entry is not optional — the import runs whether or not
-  the consumer virtualizes anything. Windowing lives on the `./virtual` entry
-  for that reason alone, and a dist-level test pins it.
-
-## What this component owes
-
-It is an interactive surface, so it owes the full component contract — both the
-authoring half and the inhabited half.
-
-1. **Controlled, and serializable.** `state` + `onStateChange`, one object,
-   always the FULL next state. Never emit a slice: a host that has to merge
-   slices to know what the grid shows is a host an agent cannot read back from.
-   Every field must survive `JSON.parse(JSON.stringify(state))`.
-
-2. **Stable handles, rooted on `gridId`.** `data-fancy-grid-row` is keyed by ROW
-   ID, never by index — an index-keyed handle points at a different row after a
-   sort, and selection silently follows the wrong rows. Adding a new interactive
-   element means adding its handle in the same commit.
-
-3. **JSON-friendly columns.** A column an agent can emit has no functions in it.
-   `accessor` is a dot-path rather than a getter for exactly this reason. `cell`
-   exists for humans; nothing may require it to work.
-
-4. **Predictable over faithful.** Where the engine's default is inconsistent,
-   this package picks one rule and documents it — `sortDescFirst: false` so a
-   first click ascends on every column, rather than descending on numbers and
-   ascending on text. An agent reading the state back should not have to know
-   the column's data type to predict it.
-
-5. **Never present a page as the whole.** In `serverSide` mode the grid reports
-   intent and performs nothing. The failure being avoided is a grid that sorts
-   the one page it holds and shows it as the sorted result — wrong, and it looks
-   completely correct.
-
-## Commands
+## Install
 
 ```bash
-npm install
-npm test      # vitest — behaviour + packaging contract
-npm run lint  # tsc --noEmit && eslint .
-npm run build # tsup
+npm install @particle-academy/fancy-grid @tanstack/react-table
+# windowing is opt-in
+npm install @tanstack/react-virtual
+# editing and paste review need react-fancy
+npm install @particle-academy/react-fancy
 ```
 
-## Conventions
+- **Peers:** `@tanstack/react-table ^8` (required), `react ^19`, `react-dom ^19`.
+  Optional: `@tanstack/react-virtual ^3` (for `./virtual`) and
+  `@particle-academy/react-fancy` `>=6.7.1 <7.0.0` (for `./controls`).
+- The package has no runtime dependencies; you choose the TanStack versions.
 
-- **Tests render against a real document** (jsdom) and read the DOM back. A mock
-  that agrees with whatever we rendered proves nothing.
-- **Handles are asserted in tests.** They are the agent-facing API; if they move,
-  every agent that learned this grid breaks silently — it finds nothing and
-  reports nothing.
-- **`react-fancy` is an OPTIONAL peer, on the `./controls` entry only.** The grid
-  itself is structural and matches the suite's Tailwind vocabulary without an
-  import, and a read-only grid must not have to install a component kit. Anything
-  interactive (cell editors, paste review buttons) is a `FancyGridControls` entry
-  the root takes as a prop, and `./controls` is where those are built from
-  `react-fancy`. The same reason `./virtual` is separate, and a dist-level test
-  pins it. There is no hand-rolled fallback: without `controls`, no editor opens.
-- **Every write takes one path.** `checkEdit` then `deliverEdit` in
-  `FancyDataGrid.tsx`, whether it came from a keystroke, the handle or a bridge.
-  `coerceCellValue` in `src/editing.ts` is the only definition of a valid cell. A
-  second path is how a value ends up accepted from an agent and refused from a human.
-- **The grid never holds an edit of its own and never changes `rows`.** The active
-  cell, the open editor and its draft are all in `state`, so an agent can read them
-  and a virtual window can drop a row without losing a half-typed value.
-- **A paste is staged, always, and what was approved is what gets applied.** Never add
-  a path from clipboard text to `onCellEdit` that skips `state.pendingPaste`. A second
-  stage must not replace one under review, and a confirm re-checks every cell against
-  the current rows.
-- **Pasted text is hostile.** It is `text/plain` only, it renders as a text node, and
-  it never reaches a custom `cell` before it is confirmed. Refuse rather than trim.
-- **Neutralizing is by value type**, matching holy-sheet's `Exchange/Csv.php`. Change
-  one and check the other.
-- **A cell under a sticky column looks in view to the browser.** `focus()` will not
-  scroll it out, and `scroll-margin` does not fix that. `revealPastPins` does, and
-  only a real browser can tell the difference.
-- `process.env.NODE_ENV` is declared in `src/env.d.ts` rather than by installing
-  `@types/node` — this is a browser package, and Node's globals must not
-  typecheck clean here.
+## Find it on the Fancy MCP server
+
+The catalog server is `https://ui.particle.academy/mcp` (streamable HTTP, no API
+key; MCP id `fancy-ui`). This package is the registry entry `fancy-grid`. Find
+it with `search-components` ("data grid"), get exact commands with
+`install-instructions`, and the source bundle with `get-component`. Vendored
+source instead of the npm package: `npx fancy-cli@latest add fancy-grid`.
+
+## API essentials
+
+- **Entries:** the root (`FancyDataGrid`, `FancyGridColumn`, `FancyGridState`,
+  `FancyDataGridHandle`), `./controls` (`fancyGridControls`) and `./virtual`
+  (`useGridVirtualizer`).
+- **Controlled state.** `state` + `onStateChange`; the callback always receives
+  the FULL next state, never a slice. It is plain JSON (sorting, filters,
+  rowSelection, pagination, columnVisibility, columnPinning, activeCell, editing,
+  pendingPaste, pasteRefusal), so it survives a URL, a saved view or an MCP tool
+  call.
+- **JSON columns.** `id`, `header`, `accessor` (a dot-path, not a function),
+  `sortable`, `align`, `width`, `columns` (a group), `editable`
+  (`true`, or `{ type: "text" | "number" | "select", ... }`). `cell` is an
+  optional custom renderer for humans; nothing needs it.
+- **Edits.** The grid never changes `rows`. `onCellEdit({ rowId, columnId,
+  accessor, value, previous, source })` receives a validated, coerced value;
+  return `{ error }` or throw to refuse. `onCellEdits(edits)` takes a confirmed
+  paste as one batch.
+- **The handle.** `ref.current.editCell(rowId, columnId, value)` applies the same
+  rules as the keyboard and resolves to a result rather than throwing.
+  `stagePaste(text)`, `confirmPaste({ id, skipInvalid? })` and
+  `rejectPaste(id)` drive the paste review in `state.pendingPaste`.
+- **Server-side.** `serverSide` + `rowCount`: sorting, filtering and pagination
+  become intent reported through `onStateChange`; the app fetches.
+- **Stable handles**, rooted on `gridId`: `data-fancy-grid`, `-row="<rowId>"`,
+  `-cell="<columnId>"`, `-header`, `-editing`, `-staged`, `-paste-review` and the
+  rest in the README's Handles table.
+
+## Traps
+
+- **`columns` and `rows` must be stable references.** Hoist them or `useMemo`
+  them; a new reference each render re-creates the table and can render-loop
+  (the grid warns in development).
+- **Rows are identified by id, not index.** Pass `getRowId` when rows have no
+  `id` field, or selection and handles follow the wrong rows.
+- **Without `controls={fancyGridControls}` no editor opens**, though the handle
+  still takes writes.
+- **`serverSide` needs `rowCount`.** Without server-side mode the grid sorts
+  only the page it holds.
+- **Pinned columns need a scrolling parent** (`overflow: auto`). On a background
+  other than white / `zinc-900`, set `--fancy-grid-surface` to match.
+- **A paste never writes directly.** It is staged in `state.pendingPaste` until
+  someone confirms; a second paste cannot replace one under review.
+- Sorting ascends on the first click for every column, numeric ones included.
+- Copy prefixes string cells starting with `=`, `+`, `-`, `@`, tab or CR with `'`
+  so spreadsheets do not run them; real numbers are untouched.
+
+## MCP bridge
+
+`registerGridBridge` from `@particle-academy/agent-integrations/bridges/grid`
+exposes the grid to an agent: `grid_get`, `grid_sort`, `grid_filter`,
+`grid_select_rows`, `grid_set_column_visibility`, `grid_pin_columns`,
+`grid_edit_cell`, `grid_copy`, `grid_stage_paste`, `grid_get_staged_paste`,
+`grid_confirm_paste`, `grid_reject_paste`. `createGridBridgeAdapter` points it
+at a mounted grid:
+
+```tsx
+const gridRef = useRef<FancyDataGridHandle>(null);
+const stateRef = useRef(state);
+stateRef.current = state;
+
+useEffect(() => {
+  const bridge = registerGridBridge(server, {
+    adapter: createGridBridgeAdapter(gridRef, {
+      id: "orders",
+      getState: () => stateRef.current,
+      setState,
+    }),
+  });
+  return () => bridge.dispose();
+}, []);
+
+<FancyDataGrid ref={gridRef} gridId="orders" state={state} onStateChange={setState} … />
+```

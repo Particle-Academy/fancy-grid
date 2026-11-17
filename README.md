@@ -13,6 +13,13 @@ npm install @particle-academy/fancy-grid @tanstack/react-table
 npm install @tanstack/react-virtual
 ```
 
+<!-- fancy-agents-note:start -->
+> **For agents.** This package is listed on the Fancy MCP catalog server at
+> `https://ui.particle.academy/mcp` (streamable HTTP, no API key; MCP id `fancy-ui`),
+> with install commands and docs, alongside the rest of the kit. How an agent
+> installs and uses this package is in [AGENTS.md](https://github.com/Particle-Academy/fancy-grid/blob/main/AGENTS.md).
+<!-- fancy-agents-note:end -->
+
 ## Why this exists
 
 The Fancy suite had a spreadsheet (`fancy-sheets`) and a presentational
@@ -284,26 +291,8 @@ Together with the controlled state contract, that is what an MCP bridge needs:
 an agent reads the grid, sorts it, filters it and points at one cell without
 scraping the DOM or guessing selectors. `registerGridBridge` from
 `@particle-academy/agent-integrations/bridges/grid` is that bridge, and
-`createGridBridgeAdapter` points it at a mounted grid:
-
-```tsx
-const gridRef = useRef<FancyDataGridHandle>(null);
-const stateRef = useRef(state);
-stateRef.current = state;
-
-useEffect(() => {
-  const bridge = registerGridBridge(server, {
-    adapter: createGridBridgeAdapter(gridRef, {
-      id: "orders",
-      getState: () => stateRef.current,
-      setState,
-    }),
-  });
-  return () => bridge.dispose();
-}, []);
-
-<FancyDataGrid ref={gridRef} gridId="orders" state={state} onStateChange={setState} … />
-```
+`createGridBridgeAdapter` points it at a mounted grid; wiring it up is in
+[AGENTS.md](./AGENTS.md#mcp-bridge).
 
 ## License
 
